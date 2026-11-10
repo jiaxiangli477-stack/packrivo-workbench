@@ -1,0 +1,133 @@
+[Heading 1] 外贸社媒工作台 · 需求与准备清单
+[Normal] Oct 23, 2026 · @zack
+[Heading 2] 项目概述
+[Normal] 目标：一个人每周 1–2 小时，完成多平台社媒内容的选题、制作、发布和复盘，持续给独立站引流。
+[Normal] 工作台由四块组成，部署在你自己的服务器上：
+[Normal] 原则：参考爆款的结构做二创，不搬运原文和原图，避免平台降权和版权投诉。
+[Heading 2] 需求模板（请直接在“你的回答”一列填写）
+[Normal] 填不准的可以留空或写“不确定”，我会按常见做法先定。
+[Heading 2] 功能模块清单
+[Normal] 第一版（MVP）只做能跑通“搜爆款 → 二创 → 发布 → 看数据”的部分，其余放到二期。
+[Heading 3] 模型接入设置（工作台内置）
+[Normal] 工作台要有一个“模型接入”设置页，文字、图片、视频模型都在这里配置，不用改代码。
+[Normal] 开发阶段的派工优先用免费的 CLI（Codex、Gemini），CLI 不可用时改走你的中转站接口。
+[Normal] CLI 也能走中转站： Codex CLI 等命令行工具本身支持自定义接口地址。会员额度用完或账号不可用时，可以切换到中转站继续用 GPT 等模型，派工流程不变。
+[Normal] 本机的中转站地址和 Key 统一填在 C:\Users\<user>\.ai-keys\keys.env，Codex 和 PAL 共用。
+[Heading 2] 数据看板
+[Normal] 看板回答一个问题：哪个平台、哪类内容，给独立站带来了最多访问和订单。分四个页面：
+[Normal] 核心指标定义：
+[List Paragraph] 互动率 = （点赞 + 评论 + 分享 + 收藏）÷ 曝光
+[List Paragraph] 引流访问 = GA4 中 utm_source 为该平台的会话数
+[List Paragraph] 内容 ROI = 引流订单金额 ÷ 当周 API 和采集费用
+[Heading 2] 准备清单
+[Normal] 账号和 API Key 只能你本人申请，我不会代你登录或录入密码；拿到后按我给的方式写进服务器配置文件，不要发在聊天里。
+[Normal] 服务器（你已有）
+[List Paragraph] ☐ 确认配置不低于 2 核 4GB 内存、硬盘 40GB 以上（Postiz + 数据库 + 看板建议 4 核 8GB）
+[List Paragraph] ☐ 系统最好是 Ubuntu 22.04 / 24.04
+[List Paragraph] ☐ 海外服务器优先：国内服务器连不上 FB / TikTok / OpenAI 的接口
+[List Paragraph] ☐ 能用 SSH 登录，开放 80 / 443 端口
+[List Paragraph] ☐ 准备一个子域名解析到服务器（平台回调要求 HTTPS 域名）
+[List Paragraph] ☐ 在服务器上安装 Docker 和 Docker Compose（可以让我写好命令你执行）
+[Normal] 本机（这台 Windows）
+[List Paragraph] ☒ Node.js（已装 v24）
+[List Paragraph] ☒ Python（已装 3.13）
+[List Paragraph] ☒ SSH（系统自带）
+[List Paragraph] ☐ 安装 Git：git-scm.com
+[Normal] AI 接口
+[List Paragraph] ☐ OpenAI API Key（platform.openai.com，充值 $10–$20 起步）
+[List Paragraph] ☐ DeepSeek API Key（platform.deepseek.com）
+[List Paragraph] ☐ 确认你说的“dsh”是不是 DeepSeek
+[Normal] 爆款采集
+[List Paragraph] ☐ 注册 Apify 账号（apify.com），免费额度可先试
+[List Paragraph] ☐ 收藏 TikTok Creative Center 和 Meta 广告资料库，先手动搜几个关键词看看
+[Normal] 社媒平台（以你选的平台为准）
+[List Paragraph] ☐ Facebook 公共主页 + Meta 商务管理平台（Business Manager），完成商家验证
+[List Paragraph] ☐ Instagram 切换为专业账号，并关联到 FB 主页
+[List Paragraph] ☐ Meta 开发者账号（developers.facebook.com）
+[List Paragraph] ☐ TikTok 企业号 + TikTok 开发者账号（developers.tiktok.com）
+[List Paragraph] ☐ 其他平台（YouTube / LinkedIn / Pinterest）按需准备开发者账号
+[Normal] 独立站数据
+[List Paragraph] ☐ 确认独立站已装 GA4，并能开启 GA4 Data API（看板读取引流数据用）
+[Normal] 内容资料
+[List Paragraph] ☐ 整理 3–5 款主推产品的图片、卖点、目标客户，放在一个文件夹
+[List Paragraph] ☐ 收集 5–10 条你觉得好的同行爆款链接
+[Heading 2] 实施顺序
+[Normal] 建议先做工作台，智能体协同放到最后。原因有三点：
+[List Paragraph] 协同要有活可派。没有爆款库、发布接口和数据，智能体之间只能空转。
+[List Paragraph] 搭工作台这件事，协同已经在发生：我（Claude Code）负责规划和写代码，需要时调用 GPT / DeepSeek，不用先单独搭一套框架。
+[List Paragraph] 内容生产的协同（选题 → 二创 → 审核 → 发布）本来就是工作台阶段 2 的一部分，做完阶段 2 就有了；阶段 4 只是让它定时自动运行。
+[Normal] 实施路线 · 4 个阶段，菱形下方是每阶段的过关标准
+[Normal] 每个阶段过关后再进下一阶段，阶段 1 预计在账号齐全后 1–2 天内完成。
+
+=== TABLE 1 (5x3) ===
+模块 | 做什么 | 用什么实现
+爆款库 | 按关键词搜各平台爆款，按互动数据排序，选一条进入二创 | Apify 采集 TikTok + TikTok Creative Center / Meta 广告库
+AI 内容流水线 | 拆解爆款结构 → 套用到你的产品 → 生成多平台、多语言文案和配图 | Claude（主脑）+ GPT / DeepSeek API 分工
+发布中心 | 一处管理所有账号，排期发布到 FB、IG、TikTok 等 | Postiz（开源，自带 MCP 接口）
+数据看板 | 各平台表现 + 独立站引流效果 | 自建看板，接 Postiz 数据和 GA4
+
+=== TABLE 2 (21x3) ===
+类别 | 问题 | 你的回答
+业务 | 卖什么产品？大概有多少个 SKU？ | 包装，不确定多少SKU
+业务 | B2B（找批发商）还是 B2C（零售）？ | B2B
+业务 | 独立站网址，用什么建的（Shopify / WordPress / 其他）？ | packrivo.com ，WordPress
+业务 | 独立站装了 GA4 或 Shopify 分析吗？ | GA4
+市场 | 主攻哪些国家？需要哪些语言？ | 欧美
+平台 | 平台优先级排序（FB / IG / TikTok / YouTube / LinkedIn / Pinterest / X） | FB INS TK PINTERESTS剩下的按照你的来
+平台 | 每个平台几个账号？是否已是商业号 / 公共主页？ | 1个，已是商业号
+内容 | 每周每个平台发几条？ | 5条
+内容 | 图文、短视频的比例？视频素材是现成的还是要 AI 生成？ | 都要，有收集的和Ai生成的选项
+内容 | 有没有自己的产品图 / 视频素材库？放在哪里？ | 我目前没有自己的产品图，后续可能有，可以上传
+内容 | 品牌调性：专业、活泼、高端、性价比？有没有禁用词？ | 专业
+爆款库 | 常用的搜索关键词（先写 5–10 个） | 目前还没，你可以帮我想一下包装类的，按照Packrivo的网站来
+爆款库 | 有没有想长期跟踪的竞品账号 / 主页？ | 目前还没有但是可以添加一下
+流程 | AI 生成后人工审核再发，还是全自动？谁来审核？ | 可以设置Ai审核，然后也可以人工审核，设置全自动和半自动
+技术 | 服务器：哪家云、哪个地区、系统、CPU / 内存 / 硬盘 | netcup 目前是2核4G 80G硬盘
+技术 | 有没有域名可以给工作台用（如 social.你的域名.com）？ | 我可以进行购买，目前可以在本地上或者用一个ip域名
+技术 | 你自己会不会写代码 / 用命令行？ | 不会
+使用者 | 只有你自己用，还是团队多人用？以后会卖给别人吗？ | 目前只有我自己用，以后会卖给别人的
+预算 | 每月能接受的 API + 采集服务费用上限 | 1000
+参考 | 有没有喜欢的工具或爆款帖子链接可以参考？ | 目前还没
+
+=== TABLE 3 (17x3) ===
+模块 | 功能 | 阶段
+爆款库 | 关键词搜索 TikTok 爆款，按播放量 / 互动率排序，卡片展示 | MVP
+爆款库 | 手动粘贴任意平台帖子链接加入爆款库 | MVP
+爆款库 | 竞品账号定时跟踪、FB/IG 自动采集 | 二期
+AI 二创 | 选中爆款 → 拆解结构（开头钩子、痛点、产品露出、结尾引导） | MVP
+AI 二创 | 套用到自己产品，一稿生成 FB / IG / TikTok 三个版本 + 多语言 | MVP
+AI 二创 | 与原帖相似度检查，太像自动重写 | MVP
+AI 二创 | TikTok 短视频脚本 + 分镜；AI 生成视频 | 脚本 MVP，视频二期
+素材 | 产品资料库：产品图、卖点、目标客户，写一次反复用 | MVP
+素材 | AI 生图（基于你的产品图换场景）+ Pexels 免版权图库 | MVP
+发布 | Postiz 多平台排期、按目标市场时区定时 | MVP
+发布 | 每条帖子自动加 UTM 链接回独立站 | MVP
+发布 | 人工审核队列：通过 / 修改 / 打回 | MVP
+数据 | 数据看板（见下一节） | MVP
+数据 | 每周自动复盘报告，推荐下周选题 | 二期
+互动 | 评论、私信 AI 辅助回复 | 二期
+团队 | 多用户、权限、审批流 | 二期
+
+=== TABLE 4 (8x2) ===
+功能 | 说明
+自定义接口 | 填写名称、Base URL、API Key、模型名，支持 OpenAI 兼容格式的中转站和官方接口
+用途分类 | 每个接口标明用于文字 / 图片 / 视频
+测试连接 | 一键测试接口是否可用，并拉取可用模型列表
+优先级与备用 | 每类任务按顺序尝试：主接口失败自动切到备用接口
+按任务指定模型 | 如初筛用 DeepSeek、英文文案用 GPT、视频用中转站的可灵
+用量统计 | 按接口和任务统计调用次数与花费，在数据看板展示
+Key 安全 | Key 加密保存，页面上只显示后 4 位
+
+=== TABLE 5 (5x3) ===
+工具 | 默认通道 | 备用通道
+Codex CLI（GPT） | ChatGPT 账号登录 | 中转站（在 Codex 配置里加一个自定义提供商，切换即用）
+Gemini CLI | Google 账号免费额度 | 中转站或 Gemini API Key
+PAL（我调用其他模型） | 通过 clink 调用上面两个 CLI | 中转站自定义接口、OpenRouter
+社媒工作台（服务器） | 模型接入设置里的主接口 | 同一页配置的备用接口
+
+=== TABLE 6 (5x3) ===
+页面 | 展示内容 | 数据来源
+总览 | 本周发帖数、总曝光、总互动、独立站引流访问和订单，对比上周 | Postiz + GA4
+平台对比 | 各平台的曝光、互动率、点击、引流访问、转化，按周趋势 | Postiz + GA4（按 UTM 来源拆分）
+帖子排行 | 每条帖子的数据排行，标注它模仿的爆款和使用的内容结构 | Postiz + 工作台数据库
+爆款库 | 按关键词看爆款数量、平均播放、热门话题标签 | Apify 采集结果

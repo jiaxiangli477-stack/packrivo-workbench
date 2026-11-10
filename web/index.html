@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Packrivo · 外贸社媒工作台</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='8'%20fill='%23636bff'/%3E%3Ctext%20x='16'%20y='23'%20font-family='sans-serif'%20font-size='20'%20font-weight='700'%20fill='white'%20text-anchor='middle'%3EP%3C/text%3E%3C/svg%3E" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<div class="app">
+  <aside class="rail">
+    <div class="brand">
+      <div class="logo">P</div>
+      <div class="brand-txt">
+        <strong>Packrivo</strong>
+        <span>外贸社媒工作台</span>
+      </div>
+    </div>
+
+    <nav id="nav">
+      <div class="nav-group">
+        <div class="nav-label">工作台</div>
+        <button data-view="radar">情报雷达</button>
+        <button data-view="workflow">工作流</button>
+        <button data-view="overview" class="on">总览</button>
+        <button data-view="platforms">平台覆盖</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">内容生产</div>
+        <button data-view="hotspots">爆款库</button>
+        <button data-view="products">产品与素材</button>
+        <button data-view="knowledge">知识库</button>
+        <button data-view="generate">AI 二创</button>
+        <button data-view="review">审核队列<span class="badge" id="badge-review">0</span></button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">发布</div>
+        <button data-view="schedule">排期</button>
+        <button data-view="results">发布结果</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">数据</div>
+        <button data-view="analytics">数据看板</button>
+      </div>
+      <div class="nav-group">
+        <div class="nav-label">系统</div>
+        <button data-view="accounts">账号</button>
+        <button data-view="models">模型接入</button>
+        <button data-view="ledger">状态台账</button>
+        <button data-view="settings">设置</button>
+      </div>
+    </nav>
+
+    <div class="rail-foot">
+      <span class="dot" id="health-dot"></span>
+      <span id="health">连接中…</span>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="title-wrap">
+        <h1 id="title">总览</h1>
+        <p id="subtitle">今天该干什么，一眼看到</p>
+      </div>
+      <div class="top-actions">
+        <button class="btn ghost" id="btn-theme">浅色</button>
+        <button class="btn ghost" id="btn-tick">跑一轮队列</button>
+        <button class="btn ghost" id="btn-refresh">刷新</button>
+      </div>
+    </header>
+    <section id="view" class="view"></section>
+  </main>
+</div>
+<div id="toast" class="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>

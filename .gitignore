@@ -1,0 +1,34 @@
+# 运行数据与本地密钥，不进仓库
+node_modules/
+data/
+deploy/data/
+tools/
+*.db
+*.db-wal
+*.db-shm
+master.key.dpapi
+*.log
+
+# Meta 开发者注册流程截图里带账号头像，留在本地
+# 其余 63 张开发期截图在仓库里，docs/STATUS.md 与 README 会引用
+ops/meta-*.png
+
+# 本机缓存
+.cache/
+.tmp/
+
+# Python 字节码（service/sd_server.py 运行后会生成）
+__pycache__/
+*.py[cod]
+
+# 环境变量与证书类密钥材料
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# 数据库备份
+*.db.bak
+data.bak/

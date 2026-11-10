@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>Packrivo 社媒工作台 · 链路与调用关系</title>
+<style>
+  :root { --bg:#0b0f16; --surface:#111823; --line:#233047; --text:#e6edf7; --muted:#93a2b8; --ok:#2b7a4b; --warn:#c08a2e; --bad:#a63d3d; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:28px 32px 60px; background:var(--bg); color:var(--text); font:14px/1.7 "Segoe UI", system-ui, sans-serif; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  h2 { font-size:16px; margin:28px 0 10px; padding-left:10px; border-left:3px solid #4f8cff; }
+  .sub { color:var(--muted); margin-bottom:18px; }
+  .panel { background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:16px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; }
+  code, .mono { font-family: Consolas, ui-monospace, monospace; font-size:12.5px; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); }
+  .ok { color:#7ee2a8; border-color:var(--ok); }
+  .warn { color:#f0c674; border-color:var(--warn); }
+  .bad { color:#ff9b9b; border-color:var(--bad); }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .muted { color:var(--muted); }
+  .num { text-align:right; font-variant-numeric:tabular-nums; }
+  ul { margin:6px 0 0 18px; padding:0; }
+  li { margin:3px 0; }
+</style>
+</head>
+<body>
+
+<h1>Packrivo 外贸社媒工作台 · 链路与调用关系</h1>
+<div class="sub">本机实测版 · 2026-10-26 · 全部端口与端点均为实际在跑的实现</div>
+
+<h2>一、组件地图</h2>
+<div class="panel">
+<svg viewBox="0 0 1180 470" width="100%" style="max-width:1180px">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#4f8cff"/></marker>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#8a94a6"/></marker>
+  </defs>
+
+  <!-- 浏览器 -->
+  <rect x="20" y="180" width="150" height="80" rx="12" fill="#111823" stroke="#4f8cff"/>
+  <text x="95" y="212" fill="#e6edf7" font-size="14" text-anchor="middle">浏览器</text>
+  <text x="95" y="234" fill="#93a2b8" font-size="11.5" text-anchor="middle">127.0.0.1:8795</text>
+
+  <!-- 面板服务 -->
+  <rect x="250" y="120" width="230" height="190" rx="12" fill="#111823" stroke="#4f8cff"/>
+  <text x="365" y="150" fill="#e6edf7" font-size="14" text-anchor="middle" font-weight="600">工作台服务 Node</text>
+  <text x="365" y="172" fill="#93a2b8" font-size="11.5" text-anchor="middle">server.mjs · 无框架 ESM</text>
+  <text x="365" y="194" fill="#93a2b8" font-size="11.5" text-anchor="middle">路由 / 队列 / 通道 / 质检</text>
+  <text x="365" y="216" fill="#93a2b8" font-size="11.5" text-anchor="middle">SQLite: data/workbench.db</text>
+  <text x="365" y="238" fill="#93a2b8" font-size="11.5" text-anchor="middle">素材: data/media/</text>
+  <text x="365" y="260" fill="#93a2b8" font-size="11.5" text-anchor="middle">凭据: DPAPI + AES-256-GCM</text>
+
+  <!-- 模型网关 -->
+  <rect x="560" y="40" width="210" height="80" rx="12" fill="#111823" stroke="#2b7a4b"/>
+  <text x="665" y="70" fill="#e6edf7" font-size="14" text-anchor="middle">模型网关 :8787/v1</text>
+  <text x="665" y="92" fill="#93a2b8" font-size="11.5" text-anchor="middle">kimi / flash / pro / 辅助</text>
+
+  <!-- 出图 -->
+  <rect x="560" y="140" width="210" height="80" rx="12" fill="#111823" stroke="#2b7a4b"/>
+  <text x="665" y="170" fill="#e6edf7" font-size="14" text-anchor="middle">ComfyUI :8188</text>
+  <text x="665" y="192" fill="#93a2b8" font-size="11.5" text-anchor="middle">SD1.5 / SDXL-turbo</text>
+
+  <!-- 外部图像 API -->
+  <rect x="560" y="240" width="210" height="70" rx="12" fill="#111823" stroke="#c08a2e"/>
+  <text x="665" y="268" fill="#e6edf7" font-size="14" text-anchor="middle">外部图像 API</text>
+  <text x="665" y="290" fill="#93a2b8" font-size="11.5" text-anchor="middle">/images/generations（待填 Key）</text>
+
+  <!-- 采集 -->
+  <rect x="560" y="330" width="210" height="110" rx="12" fill="#111823" stroke="#2b7a4b"/>
+  <text x="665" y="358" fill="#e6edf7" font-size="14" text-anchor="middle">采集源</text>
+  <text x="665" y="380" fill="#93a2b8" font-size="11.5" text-anchor="middle">YouTube · Google News</text>
+  <text x="665" y="400" fill="#93a2b8" font-size="11.5" text-anchor="middle">Bluesky · Mastodon · Lemmy</text>
+  <text x="665" y="420" fill="#93a2b8" font-size="11.5" text-anchor="middle">Amazon / Alibaba（Edge 自动化）</text>
+
+  <!-- 发布 -->
+  <rect x="830" y="60" width="200" height="180" rx="12" fill="#111823" stroke="#2b7a4b"/>
+  <text x="930" y="90" fill="#e6edf7" font-size="14" text-anchor="middle">发布通道</text>
+  <text x="930" y="114" fill="#93a2b8" font-size="11.5" text-anchor="middle">Bluesky（已实测）</text>
+  <text x="930" y="136" fill="#93a2b8" font-size="11.5" text-anchor="middle">Mastodon（待 token）</text>
+  <text x="930" y="158" fill="#93a2b8" font-size="11.5" text-anchor="middle">Telegram Bot（待填）</text>
+  <text x="930" y="180" fill="#93a2b8" font-size="11.5" text-anchor="middle">mock / webhook</text>
+  <text x="930" y="202" fill="#93a2b8" font-size="11.5" text-anchor="middle">Postiz（待 Docker）</text>
+
+  <!-- ARTEX -->
+  <rect x="830" y="280" width="200" height="120" rx="12" fill="#111823" stroke="#c08a2e"/>
+  <text x="930" y="310" fill="#e6edf7" font-size="14" text-anchor="middle">ARTEX :8790</text>
+  <text x="930" y="332" fill="#93a2b8" font-size="11.5" text-anchor="middle">kimi 派单 / 验收</text>
+  <text x="930" y="352" fill="#93a2b8" font-size="11.5" text-anchor="middle">flash / pro 执行</text>
+  <text x="930" y="372" fill="#93a2b8" font-size="11.5" text-anchor="middle">glm 整理</text>
+
+  <!-- 边 -->
+  <path d="M170,220 C210,220 210,215 250,215" stroke="#4f8cff" fill="none" stroke-width="1.8" marker-end="url(#a)"/>
+  <path d="M480,160 C520,120 520,90 560,85" stroke="#4f8cff" fill="none" stroke-width="1.8" marker-end="url(#a)"/>
+  <path d="M480,200 C520,190 520,180 560,180" stroke="#4f8cff" fill="none" stroke-width="1.8" marker-end="url(#a)"/>
+  <path d="M480,270 C520,272 520,275 560,275" stroke="#4f8cff" fill="none" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#a)"/>
+  <path d="M480,300 C520,350 520,380 560,385" stroke="#8a94a6" fill="none" stroke-width="1.6" marker-end="url(#b)"/>
+  <path d="M480,140 C520,120 780,120 830,120" stroke="#4f8cff" fill="none" stroke-width="1.8" marker-end="url(#a)"/>
+  <path d="M930,240 C930,260 930,262 930,280" stroke="#c08a2e" fill="none" stroke-width="1.6" stroke-dasharray="5 4"/>
+</svg>
+</div>
+
+<h2>二、一次“发一条 Bluesky 帖”的完整调用链</h2>
+<div class="panel">
+<table>
+<thead><tr><th style="width:42px">#</th><th>动作</th><th>实际调用</th><th>落到哪</th><th>状态</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>抓情报</td><td><code>POST /api/radar/refresh</code> → YouTube HTML / Google News RSS / Bluesky searchPosts / Mastodon timelines / Amazon(ed. profile)</td><td><code>radar_snapshot</code> · <code>radar_seen</code></td><td><span class="tag ok">通</span></td></tr>
+<tr><td>2</td><td>kimi 质检</td><td><code>chat(task=audit)</code> → 网关 8787 → kimi-k3.1-pro，分块 10 条/批</td><td><code>audit</code> 字段</td><td><span class="tag ok">通</span></td></tr>
+<tr><td>3</td><td>选品</td><td><code>GET /api/products</code> · <code>GET /api/kb</code></td><td><code>product</code> · <code>kb_item</code></td><td><span class="tag ok">通</span></td></tr>
+<tr><td>4</td><td>kimi 出简报</td><td><code>chat(task=brief)</code> → kimi：角度/钩子/结构/证据点/CTA</td><td>拼进写稿 prompt</td><td><span class="tag ok">通</span></td></tr>
+<tr><td>5</td><td>flash 写稿</td><td><code>chat(task=rewrite)</code> → deepseek-v4.1-flash（带平台字数上限）</td><td><code>content</code>（title/body）</td><td><span class="tag ok">通</span></td></tr>
+<tr><td>6</td><td>话题标签</td><td><code>pickTags(platform)</code> → <code>hashtag</code> + <code>platform_tag_policy</code>（Bluesky 2–3 个）</td><td><code>content.hashtags</code></td><td><span class="tag ok">通</span></td></tr>
+<tr><td>7</td><td>出图</td><td><code>POST /api/contents/:id/generate-image</code> → ComfyUI 8188（SD1.5）或外部 <code>/images/generations</code></td><td><code>data/media/*.png</code> · <code>content.image_path</code></td><td><span class="tag ok">通（本地 57s/张）</span></td></tr>
+<tr><td>8</td><td>AI 预审</td><td><code>POST /api/contents/:id/ai-review</code> → 敏感词 + 泄漏检测 + 模型评分</td><td><code>review</code> · <code>content.status</code></td><td><span class="tag ok">通</span></td></tr>
+<tr><td>9</td><td>人工审核</td><td>审核队列（折叠卡片）点「通过 / 打回」</td><td><code>review</code></td><td><span class="tag ok">通</span></td></tr>
+<tr><td>10</td><td>排期</td><td><code>POST /api/schedules</code>（channel=bluesky）</td><td><code>schedule</code></td><td><span class="tag ok">通</span></td></tr>
+<tr><td>11</td><td>发布</td><td><code>POST /api/tick</code> → queue 原子领取 → <code>channels.bluesky</code> → <code>com.atproto.repo.createRecord</code></td><td><code>publish_result</code>（含帖子 URL）</td><td><span class="tag ok">通（已发 5 条）</span></td></tr>
+<tr><td>12</td><td>回填</td><td><code>POST /api/metrics</code>（曝光/互动/点击/询盘）</td><td><code>metric</code></td><td><span class="tag warn">待接 GA4</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>三、现在通 / 不通（据实）</h2>
+<div class="panel">
+<table>
+<thead><tr><th>能力</th><th>状态</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>Bluesky 真发（文字 + 链接卡片 + 缩略图）</td><td><span class="tag ok">通</span></td><td>已发 5 条，含 4 条带链接卡片</td></tr>
+<tr><td>本地出图（SD1.5）</td><td><span class="tag ok">通</span></td><td>816×1024，约 57 秒/张</td></tr>
+<tr><td>外部出图 API</td><td><span class="tag warn">已接，待 Key</span></td><td>设置里填 Base/Key/Model 即走外部</td></tr>
+<tr><td>Mastodon 直连</td><td><span class="tag warn">待 token</span></td><td>应用已建好，token 在“开发→你的应用”页底</td></tr>
+<tr><td>Telegram Bot</td><td><span class="tag warn">待填</span></td><td>通道已写，设置页有 Bot Token / chat_id 两栏</td></tr>
+<tr><td>FB / IG / TikTok / Pinterest</td><td><span class="tag bad">未接</span></td><td>要平台开发者审核 + Postiz 自建（Docker 待重启生效）</td></tr>
+<tr><td>数据回填</td><td><span class="tag warn">手填</span></td><td>字段已留（inquiries），GA4 未授权</td></tr>
+<tr><td>视频生成</td><td><span class="tag bad">未做</span></td><td>6G 显存跑不动主流视频模型，建议云端 API</td></tr>
+</tbody>
+</table>
+</div>
+
+
+<h2>三、采集：抓什么、用什么抓、失败怎么办</h2>
+<div class="panel">
+<table>
+<thead><tr><th style="width:120px">来源</th><th>抓到的字段</th><th>用什么抓</th><th style="width:150px">数量/频率</th><th style="width:150px">失败处理</th></tr></thead>
+<tbody>
+<tr><td>YouTube</td><td>标题、播放量、时长、发布时间、缩略图、链接</td><td>搜索结果页 HTML（<code>sp=EgQIBRAB</code> 只取今年），yt-dlp 兜底</td><td>每词 20 条，6 个种子词</td><td>单源失败写进 <code>errors[]</code>，不中断其他源</td></tr>
+<tr><td>Google News</td><td>标题、来源媒体、时间、链接</td><td>Google News RSS <code>/rss/search?q=</code></td><td>每词 8 条</td><td>同上</td></tr>
+<tr><td>Bluesky</td><td>正文、作者、赞/转/回、配图</td><td><code>api.bsky.app/xrpc/app.bsky.feed.searchPosts?sort=top</code></td><td>7 组查询 ×12</td><td>同上</td></tr>
+<tr><td>Mastodon</td><td>正文、作者、赞/转/回、配图</td><td><code>{实例}/api/v1/timelines/tag/{tag}</code></td><td>12 个标签 ×20</td><td>同上</td></tr>
+<tr><td>Lemmy</td><td>帖文、社区、顶/评论</td><td><code>lemmy.world/api/v3/search</code></td><td>每次刷新</td><td>这条赛道经常为空，据实显示</td></tr>
+<tr><td>Amazon</td><td>标题、价格、评分、评价数、月销、主图、<code>/dp/ASIN</code> 链接</td><td><strong>Playwright + 本机 Edge 持久化 profile</strong>，解析 <code>div[data-component-type="s-search-result"]</code></td><td>2 个词 ×8</td><td>遇人机验证 → 记录错误，界面可一键换一批</td></tr>
+<tr><td>Alibaba 国际站</td><td>标题、价格、MOQ、主图</td><td>同上，打开 <code>showroom/{keyword}.html</code></td><td>2 个词 ×8</td><td>滑块验证 → 提示「阿里过人机验证」按钮手动过一次</td></tr>
+<tr><td>同行站点</td><td>站点标题、描述、建站平台、RSS 更新</td><td>直接 HTTP + 解析</td><td>20 家并发</td><td>失败计入 <code>errors</code>（本轮 20/21 成功）</td></tr>
+</tbody>
+</table>
+<p class="muted" style="margin:10px 0 0">抓完统一进 <strong>kimi 质检</strong>：10 条一批打分（0–100 + keep/drop + 理由），drop 的不展示；硬门槛：视频 ≥5000 播放且 ≤180 天，帖子互动 ≥20，商品按评价/月销排序。</p>
+</div>
+
+<h2>四、生图：模型、参数、落盘、怎么发出去</h2>
+<div class="panel">
+<table>
+<thead><tr><th style="width:130px">环节</th><th>具体做法</th></tr></thead>
+<tbody>
+<tr><td>提示词</td><td>有 <code>content.image_prompt</code> 就用；没有则 <code>chat(task=analyze)</code> 生成 60–90 词英文提示词（产品 + 场景 + 光位 + 留白 + 4:5），顺带产反向词</td></tr>
+<tr><td>本地出图</td><td>ComfyUI <code>127.0.0.1:8188</code> + <strong>SD1.5</strong>（<code>v1-5-pruned-emaonly</code>）：KSampler steps 25 / cfg 7 / euler / normal，819×1024，<strong>约 55–70 秒/张</strong></td></tr>
+<tr><td>为什么不用 SDXL</td><td>SDXL-turbo 权重 6.6G，这台 6G 显存加载即崩（access violation）；SD1.5 稳定，代价是产品细节偏「氛围图」</td></tr>
+<tr><td>外部出图</td><td>设置里填 <code>image_api_base/key/model</code> → <code>POST {base}/images/generations</code>（OpenAI 兼容，<code>response_format=b64_json</code>）；配了外部就优先走外部</td></tr>
+<tr><td>落盘</td><td><code>data/media/gen-*.png</code>（本地）或 <code>api-*.png</code>（外部）；DB 写 <code>content.image_path / image_alt / image_prompt</code></td></tr>
+<tr><td>发布时</td><td>Bluesky：<code>uploadBlob</code> 上传 → 卡片 <code>thumb</code>；Telegram：<code>sendPhoto</code> 带 caption</td></tr>
+<tr><td>批量</td><td><code>POST /api/images/batch {limit:10}</code> 后台串行跑，UI 每 4 秒轮询 <code>GET /api/images/batch</code> 显示 进度/成功/失败</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>五、数据怎么跟踪</h2>
+<div class="panel">
+<table>
+<thead><tr><th style="width:140px">层</th><th>字段 / 端点</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>发布结果</td><td><code>publish_result</code>: ok、channel、platform_post_id、url、error_class、detail</td><td>成功才有 URL；失败归因（pending_config / upstream_error / auth_failed）</td></tr>
+<tr><td>指标表</td><td><code>metric</code>: content_id, platform, day, impressions, likes, comments, shares, saves, clicks, sessions, orders_amount, <strong>inquiries</strong>, source</td><td>source = demo / manual / ga4</td></tr>
+<tr><td>录入</td><td><code>POST /api/metrics</code></td><td>数据看板有表单，按天回填</td></tr>
+<tr><td>聚合</td><td><code>GET /api/metrics/overview?days=30</code></td><td>总量 / 按平台 / 帖子排行（含询盘）/ 互动率 / CTR</td></tr>
+<tr><td>归因</td><td>UTM：<code>utm_source=平台&amp;utm_medium=social&amp;utm_campaign=产品slug-YYMM&amp;utm_content=c{id}</code></td><td>与 <code>content.id</code> 一一对应，能倒查是哪条稿带来的</td></tr>
+<tr><td>现状缺口</td><td>指标目前<strong>靠手填</strong>；平台侧点赞/曝光没有自动拉回</td><td>GA4 未授权；下一步可加「定时回捞 Bluesky/IG 互动数」</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>六、数据表（SQLite · data/workbench.db）</h2>
+<div class="panel">
+<div class="grid">
+<div>
+<ul>
+<li><code>content</code> 稿件：平台/标题/正文/标签/UTM/状态/配图/父稿</li>
+<li><code>review</code> 审核记录（AI/人工）</li>
+<li><code>schedule</code> 排期（state: pending/queued/published/failed）</li>
+<li><code>publish_result</code> 发布结果（真实 URL / 错误归因）</li>
+<li><code>metric</code> 每日指标（曝光/互动/点击/询盘，source=demo|manual|ga4）</li>
+</ul>
+</div>
+<div>
+<ul>
+<li><code>radar_snapshot</code> 情报快照（含 kimi 质检结果）</li>
+<li><code>radar_seen</code> 已看过的 URL（换一批去重）</li>
+<li><code>hashtag</code> 标签池（平台×层级×权重）</li>
+<li><code>platform_tag_policy</code> 每平台标签配额/字数/链接方式</li>
+<li><code>credential</code> 凭据（DPAPI 包密钥 + AES-GCM）</li>
+<li><code>product</code> / <code>kb_item</code> / <code>account</code> / <code>audit_log</code></li>
+</ul>
+</div>
+</div>
+</div>
+
+<h2>七、常驻进程与文件</h2>
+<div class="panel">
+<table>
+<thead><tr><th>东西</th><th>位置 / 端口</th><th>怎么起</th></tr></thead>
+<tbody>
+<tr><td>工作台服务</td><td>127.0.0.1:8795</td><td>桌面「Packrivo 工作台」快捷方式</td></tr>
+<tr><td>ComfyUI 出图</td><td>127.0.0.1:8188</td><td><code>service/comfy-start.ps1</code>（python E:\Ai\Python311）</td></tr>
+<tr><td>ARTEX 编排</td><td>127.0.0.1:8790</td><td><code>E:\Ai\ARTEX-Portable\ARTEX.exe</code></td></tr>
+<tr><td>模型网关</td><td>127.0.0.1:8787/v1</td><td>外部中转，已常驻</td></tr>
+<tr><td>代码</td><td><code>social-workbench/app/*.mjs</code> · <code>web/*</code></td><td>无构建，改完刷新即可</td></tr>
+<tr><td>部署包</td><td><code>deploy/postiz/</code></td><td><code>docker compose up -d</code>（Docker 已装，待重启）</td></tr>
+</tbody>
+</table>
+</div>
+
+</body>
+</html>

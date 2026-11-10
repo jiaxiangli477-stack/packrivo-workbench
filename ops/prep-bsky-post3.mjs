@@ -1,0 +1,10 @@
+import { DatabaseSync } from 'node:sqlite';
+const db = new DatabaseSync('E:/破甲工作区/social-workbench/data/workbench.db');
+const id = 18;
+const url = 'https://www.packrivo.com/product-drawer-jewelry-box/?utm_source=bluesky&utm_campaign=drawer-jb-2610';
+const body = 'Drawer jewelry boxes built to your specs: insert sized to your rings & chains, pull defined, pre-production sample checked.\n\nMOQ 500 pcs per design.\n' + url;
+const tags = '#JewelryPackaging #PackagingSupplier';
+const full = body + '\n' + tags;
+db.prepare('update content set title=?, body=?, hashtags=?, utm_url=? where id=?').run('', body, tags, url, id);
+console.log('chars:', full.length);
+console.log(full);

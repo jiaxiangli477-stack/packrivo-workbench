@@ -1,0 +1,98 @@
+﻿[
+    {
+        "id":  53,
+        "score":  100,
+        "decision":  "approve",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "Post complies with brand guidelines, uses approved terminology and MOQ, contains no prohibited claims or exaggerations, and CTA aligns with the landing page."
+    },
+    {
+        "id":  52,
+        "score":  0,
+        "decision":  "reject",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "用户要求我作为外贸社媒内容审核，判断一条Bluesky帖子能否直接发布，并只输出JSON。\n\n让我分析这条帖子：\n\n正文：For US/EU small brands: 3 inputs move a lid/base box quote. Lid fit, interior usable space, insert layout. PR-LIDBASE-JB is made to all thr"
+    },
+    {
+        "id":  51,
+        "score":  75,
+        "decision":  "reject",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "内容未触犯品牌红线，但含标题与标签总字符数约338，超过Bluesky 300字符限制，不能直接发布。"
+    },
+    {
+        "id":  50,
+        "score":  95,
+        "decision":  "approve",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "内容符合品牌规范，术语与MOQ正确，CTA一致，未发现禁用表述或认证误导。"
+    },
+    {
+        "id":  45,
+        "score":  82,
+        "decision":  "reject",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "硬约束与平台规范基本通过，但存在一处英文搭配不自然，建议修改后再发布。"
+    },
+    {
+        "id":  44,
+        "score":  95,
+        "decision":  "approve",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "帖子未触犯禁用词与品牌定位，MOQ及CTA规范，字符数在Bluesky限制内，可直接发布。"
+    },
+    {
+        "id":  43,
+        "score":  100,
+        "decision":  "approve",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "Content complies with brand guidelines, uses correct MOQ and positioning, contains no prohibited claims or certifications, and CTA matches the brand sourcing-coordinator role."
+    },
+    {
+        "id":  42,
+        "score":  98,
+        "decision":  "approve",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "内容符合品牌定位与语气，无禁用词、无认证编造、无拼写语病，CTA与落地页一致，标签数量合规。"
+    },
+    {
+        "id":  41,
+        "score":  95,
+        "decision":  "approve",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "内容专业合规，无禁用词与夸大承诺，品牌定位准确，CTA与落地页一致，标签数量合规。"
+    },
+    {
+        "id":  36,
+        "score":  98,
+        "decision":  "approve",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "内容符合品牌定位与合规要求，无禁用词、无夸大承诺，CTA与落地页一致。"
+    },
+    {
+        "id":  35,
+        "score":  98,
+        "decision":  "approve",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "内容符合品牌采购协调定位，无禁用词、夸大承诺或未授权认证，术语规范，CTA与落地页一致。"
+    },
+    {
+        "id":  34,
+        "score":  100,
+        "decision":  "approve",
+        "forced":  false,
+        "hits":  "",
+        "reason":  "内容符合品牌规范，无夸大承诺或违禁词，术语、MOQ及CTA均准确且与落地页一致。"
+    }
+]
