@@ -70,7 +70,7 @@ export const channels = {
     note: '把发布结果写进本地库，用来跑通全链路，不接触任何平台',
     async publish({ content }) {
       const id = `mock-${Date.now().toString(36)}`;
-      return { ok: true, post_id: id, url: `local://mock/${id}` };
+      return { ok: true, post_id: id, platform_post_id: id, public_url: `local://mock/${id}`, delivery_state: 'submitted' };
     },
   },
 
@@ -89,17 +89,18 @@ export const channels = {
         hashtags: content.hashtags,
         utm_url: content.utm_url,
       });
-      if (r.status < 200 || r.status >= 300) throw new PublishError('upstream_error', `webhook 返回 ${r.status}`, r.text.slice(0, 300));
-      // 2xx 不等于发成功：接收端必须回 JSON 且带 id，否则这条不能记成已发布
+      if (r.status < 200 || r.status >= 300) throw new PublishError('upstream_error', `webhook 返回 ${r.status}`, r.text.slice(0, 300), { dispatched: true, outcomeKnown: true });
+      // 2xx 不等于发成功：接收端必须回 JSON 且带 id，否则这条不能记成已发布。
+      // 但这两种情况的真实语义是「请求已经送达、对方可能已经处理了」→ 结果未知，只能人工核对，不能重发。
       let j;
       try {
         j = JSON.parse(r.text || '');
       } catch {
-        throw new PublishError('upstream_error', 'webhook 返回 2xx 但不是 JSON，无法确认接收端已接收（请让接收端回 {"id":"..."}）', r.text.slice(0, 300));
+        throw new PublishError('upstream_error', 'webhook 返回 2xx 但不是 JSON，无法确认接收端已接收（请让接收端回 {"id":"..."}）', r.text.slice(0, 300), { dispatched: true, outcomeKnown: false });
       }
       const postId = String(j?.id || j?.post_id || j?.postId || '');
-      if (!postId) throw new PublishError('upstream_error', 'webhook 返回 2xx 但没有 id 字段，按未确认处理（请让接收端回 {"id":"..."}）', JSON.stringify(j).slice(0, 300));
-      return { ok: true, post_id: postId, url: j.url || '' };
+      if (!postId) throw new PublishError('upstream_error', 'webhook 返回 2xx 但没有 id 字段，按未确认处理（请让接收端回 {"id":"..."}）', JSON.stringify(j).slice(0, 300), { dispatched: true, outcomeKnown: false });
+      return { ok: true, post_id: postId, url: j.url || '', platform_post_id: postId, public_url: j.url || '', delivery_state: 'submitted' };
     },
   },
 

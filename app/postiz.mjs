@@ -1,6 +1,6 @@
 import { get, run, setting } from './db.mjs';
 import { encrypt, decrypt, keyHint } from './crypto.mjs';
-import { PublishError } from './errors.mjs';
+import { PublishError, RESULT_UNKNOWN_CLASS } from './errors.mjs';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 
 /* Postiz 发布中心适配器 —— 对的是它的公开 API v1：
@@ -167,19 +167,29 @@ async function api(method, pathname, payload, opts = {}) {
   } catch (e) {
     const why = e.name === 'AbortError' ? '30s 超时' : (e.cause?.code || e.message);
     noteHealth(false, why);
-    throw new PublishError('upstream_error', `连不上 Postiz：${url}（${why}）`);
+    // 建帖这种有副作用的调用：连接被拒/域名不解析 = 请求没写出去，重发安全；
+    // 超时/连接被重置 = 远端可能已经建了帖，重发就是重复发布。
+    const code = String(e.cause?.code || '');
+    const neverSent = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'ERR_INVALID_URL'].includes(code);
+    const intent = !!opts.intent;
+    throw new PublishError('upstream_error', `连不上 Postiz：${url}（${why}）`, '', {
+      dispatched: intent && !neverSent,
+      outcomeKnown: !intent || neverSent,
+    });
   } finally {
     clearTimeout(timer);
   }
 
   const text = await res.text();
+  // 走到这里说明请求确实发出去了，远端也给了明确响应：结果可判定
+  const sentKnown = { dispatched: !!opts.intent, outcomeKnown: true };
   if (res.status === 401 || res.status === 403) {
     noteHealth(false, 'HTTP ' + res.status + ' 鉴权失败');
-    throw new PublishError('pending_config', `Postiz 拒绝鉴权（HTTP ${res.status}）：API Key 不对或已撤销`, text.slice(0, 300));
+    throw new PublishError('pending_config', `Postiz 拒绝鉴权（HTTP ${res.status}）：API Key 不对或已撤销`, text.slice(0, 300), sentKnown);
   }
   if (res.status === 404) {
     noteHealth(false, 'HTTP 404 ' + url);
-    throw new PublishError('pending_config', `Postiz 路径 404：Base URL 解析成 ${base}，确认自建版本与端口`, text.slice(0, 300));
+    throw new PublishError('pending_config', `Postiz 路径 404：Base URL 解析成 ${base}，确认自建版本与端口`, text.slice(0, 300), sentKnown);
   }
   if (res.status === 429) {
     // 云版额度是整实例单值、不分档位，撞上就老老实实等，不能靠重试硬顶
@@ -187,7 +197,7 @@ async function api(method, pathname, payload, opts = {}) {
     cooldownUntil = Date.now() + wait * 1000;
     noteHealth(true, `HTTP 429 限流（服务是通的，冷却 ${Math.round(wait / 60)} 分钟）`);
     throw new PublishError('rate_limited',
-      `Postiz 限流（HTTP 429）：云版建帖端点 90 次/小时，冷却 ${Math.round(wait / 60)} 分钟后自动恢复`, text.slice(0, 300));
+      `Postiz 限流（HTTP 429）：云版建帖端点 90 次/小时，冷却 ${Math.round(wait / 60)} 分钟后自动恢复`, text.slice(0, 300), sentKnown);
   }
   if (!res.ok) {
     noteHealth(false, 'HTTP ' + res.status);
@@ -196,16 +206,18 @@ async function api(method, pathname, payload, opts = {}) {
       const j = JSON.parse(text);
       msg = [j.msg, j.message, j.error].filter(Boolean).join(' / ') || msg;
     } catch {}
-    throw new PublishError('upstream_error', `Postiz 返回 HTTP ${res.status}：${msg}`, text.slice(0, 800));
+    throw new PublishError('upstream_error', `Postiz 返回 HTTP ${res.status}：${msg}`, text.slice(0, 800), sentKnown);
   }
   noteHealth(true);
-  // 2xx 也可能是反代/网关吐的 HTML：解析不出来就抛，不给上层"看起来成功了"的机会
+  // 2xx 也可能是反代/网关吐的 HTML：解析不出来就抛，不给上层"看起来成功了"的机会。
+  // 对有副作用的调用，这里必须标成「已发出、结果未知」——帖子可能已经建了。
   if (!text) return {};
   try {
     return JSON.parse(text);
   } catch {
     noteHealth(false, 'HTTP 2xx 但响应不是 JSON');
-    throw new PublishError('upstream_error', `Postiz 返回 HTTP 2xx 但不是 JSON（多半是反向代理错误页）：${url}`, text.slice(0, 400));
+    throw new PublishError('upstream_error', `Postiz 返回 HTTP 2xx 但不是 JSON（多半是反向代理错误页）：${url}`, text.slice(0, 400),
+      { dispatched: !!opts.intent, outcomeKnown: !opts.intent });
   }
 }
 
@@ -234,6 +246,10 @@ export async function listIntegrations(force = false) {
   return list;
 }
 
+/* 注意：这个函数只给「平台覆盖」页做展示用——它按 identifier 找第一条匹配的 integration。
+   发布路径绝对不许用它：同一平台接两个号（两个 LinkedIn / 两个 YouTube）时，
+   find(i => i.identifier === cand) 永远返回列表里第一个，于是「发到 B 号」实际发到 A 号。
+   发布只认账号上显式绑定的 integration_id（resolveBoundIntegration）。 */
 function matchIntegration(platform, list) {
   const explicit = jsonSetting('postiz_integration_map', {});
   const forcedId = explicit[platform];
@@ -253,6 +269,35 @@ function matchIntegration(platform, list) {
 export async function integrationFor(platform, list) {
   const arr = list || (await listIntegrations());
   return matchIntegration(platform, arr);
+}
+
+/* PUB-04：账号 → integration 的显式绑定。
+   空绑定直接拦（不再「按平台猜一个」），绑的 id 不存在/已停用/类型对不上平台也拦。
+   这三条都是「配置没弄好」，走 pending_integration → schedule 变 blocked，不进重试。 */
+export function resolveBoundIntegration(account, platform, list) {
+  const id = String(account?.integration_id || '').trim();
+  if (!id) {
+    const hint = list.map((i) => `${i.identifier}:${i.id}`).filter(Boolean).join(', ') || '空';
+    throw new PublishError('pending_integration',
+      `账号 #${account?.id ?? '?'}（${account?.handle || '?'}）还没绑定 Postiz integration。`
+      + `到「账号」页填 integration_id；当前 Postiz 里可用的有：${hint}`, '', { dispatched: false, outcomeKnown: true });
+  }
+  const hit = list.find((i) => String(i.id) === id);
+  if (!hit) {
+    throw new PublishError('pending_integration',
+      `账号 #${account.id} 绑定的 integration ${id} 在 Postiz 里不存在（可能已删除或换实例）`, '', { dispatched: false, outcomeKnown: true });
+  }
+  if (hit.disabled) {
+    throw new PublishError('pending_integration',
+      `账号 #${account.id} 绑定的 integration ${id}（${hit.identifier || '?'}）在 Postiz 里已停用`, '', { dispatched: false, outcomeKnown: true });
+  }
+  const cands = TYPE_CANDIDATES[platform] || [];
+  const ident = String(hit.identifier || '');
+  if (cands.length && !cands.includes(ident)) {
+    throw new PublishError('pending_integration',
+      `账号 #${account.id} 绑的 integration ${id} 类型是 ${ident || '未知'}，与内容平台 ${platform} 不匹配`, '', { dispatched: false, outcomeKnown: true });
+  }
+  return hit;
 }
 
 /* ---------- 平台 settings ---------- */
@@ -440,7 +485,18 @@ export async function uploadMedia(filePath) {
 }
 
 /* ---------- 发布 ---------- */
-export async function publish({ content, account, platform, schedule }) {
+/* PUB-02：模式由调用方按请求传入（draft / schedule / now），不再读写全局 postiz_type。
+   旧实现是「临时 setSetting('postiz_type','draft') → 发布 → finally 改回去」，
+   两条请求并发时后一条会读到前一条的 draft，或者把前一条的 now 覆盖成 draft。 */
+export function normalizePublishMode(mode, fallback = 'now') {
+  const m = String(mode || '').toLowerCase();
+  if (m === 'draft' || m === 'schedule' || m === 'now') return m;
+  const f = String(fallback || '').toLowerCase();
+  return (f === 'draft' || f === 'schedule' || f === 'now') ? f : 'now';
+}
+
+export async function publish({ content, account, platform, schedule, mode }) {
+  const publishMode = normalizePublishMode(mode, schedule?.publish_mode || setting('postiz_type') || 'now');
   if (NO_POSTIZ_CHANNEL[platform]) {
     throw new PublishError('pending_integration', NO_POSTIZ_CHANNEL[platform]);
   }
@@ -449,15 +505,8 @@ export async function publish({ content, account, platform, schedule }) {
   }
 
   const list = await listIntegrations();
-  const integration = matchIntegration(platform, list);
-  if (!integration) {
-    const connected = list.map((i) => i.identifier).filter(Boolean).join(', ') || '空';
-    throw new PublishError('pending_config',
-      `Postiz 里还没有 ${platform} 通道。先在 Postiz 后台接账号，当前已接：${connected}`);
-  }
-  if (integration.disabled) {
-    throw new PublishError('pending_config', `Postiz 里 ${integration.identifier} 通道已停用（${integration.id}）`);
-  }
+  // PUB-04：只认账号自己绑的 integration，绝不按平台猜
+  const integration = resolveBoundIntegration(account, platform, list);
 
   const identifier = integration.identifier;
 
@@ -477,17 +526,16 @@ export async function publish({ content, account, platform, schedule }) {
   }
 
   const settings = buildSettings(identifier, content);
-  const mode = setting('postiz_type') || 'now';
   let date;
-  if (mode === 'schedule') {
-    if (!schedule?.run_at) throw new PublishError('pending_config', 'postiz_type=schedule 但这条排期没有 run_at');
+  if (publishMode === 'schedule') {
+    if (!schedule?.run_at) throw new PublishError('pending_config', 'schedule 模式但这条排期没有 run_at', '', { dispatched: false, outcomeKnown: true });
     date = new Date(String(schedule.run_at).replace(' ', 'T') + 'Z').toISOString();
   } else {
     date = new Date().toISOString();
   }
 
   const payload = {
-    type: mode,
+    type: publishMode,
     date,
     shortLink: setting('postiz_shortlink') === '1',
     tags: [],
@@ -500,20 +548,28 @@ export async function publish({ content, account, platform, schedule }) {
     ],
   };
 
-  const res = await api('POST', '/posts', payload);
+  // intent=true：这是有副作用的建帖调用，网络中断时结果不可假定为「没发出去」
+  const res = await api('POST', '/posts', payload, { intent: true });
   const first = Array.isArray(res) ? res[0] : res;
   const postId = String(first?.postId || first?.id || first?.post_id || '');
   const url = first?.releaseURL || first?.url || first?.releaseUrl || '';
-  // Postiz 建了帖但不回 id，说明响应结构变了或没真建成功：不许拿本地随机串冒充平台 id
+  // Postiz 建了帖但不回 id，说明响应结构变了或没真建成功：不许拿本地随机串冒充平台 id。
+  // 这里帖子很可能已经进了 Postiz 队列，只能标「结果未知」等人工核对，不能重发。
   if (!postId) {
-    throw new PublishError('upstream_error',
-      'Postiz 返回 2xx 但没有 postId，无法确认这条真的进了 Postiz 队列',
-      JSON.stringify(res).slice(0, 400));
+    throw new PublishError(RESULT_UNKNOWN_CLASS,
+      'Postiz 返回 2xx 但没有 postId，无法确认这条真的进了 Postiz 队列（已按结果未知处理，不重发）',
+      JSON.stringify(res).slice(0, 400), { dispatched: true, outcomeKnown: false });
   }
   return {
     ok: true,
+    mode: publishMode,
+    // PUB-03：postiz_post_id 是 Postiz 的建帖任务 id，平台上真正那条帖子的 id 要等它发完才有
     post_id: postId,
-    url,
+    postiz_post_id: postId,
+    platform_post_id: '',
+    public_url: String(url || ''),
+    // draft 只是躺进 integration 的草稿箱，没发布；计统计时不能算已发
+    delivery_state: publishMode === 'draft' ? 'draft' : 'submitted',
     integration: { id: integration.id, identifier, name: integration.name || '' },
   };
 }

@@ -326,8 +326,114 @@ db.exec(`create table if not exists platform_tag_policy (
   }
 }
 
+/* ================= 2026-11 批次一：审批版本绑定 / 真实发布态 =================
+   审计条目：PUB-01（审核门禁）、PUB-03（远端任务号 vs 平台号）、PUB-04（账号绑定 integration）、
+             PUB-07（排期与 job 原子化、结果未知不重发）、PUB-02（发布模式）
+   设计取舍：
+   - 只加列不删列、不改历史语义，老库原地升级；回滚脚本见 ops/rollback-batch1.mjs。
+   - 审批绑定到「内容版本」而不是布尔状态：content.content_version 与 approved_version 相等才算批准。
+   - schedule.delivery_state 与 state（排队状态机）分开：state 管本机调度，delivery_state 管远端事实。
+   - 迁移记录落在 schema_migration，避免重复回填；默认策略是「老批准一律视为未批准」（fail-closed）。 */
+db.exec(`create table if not exists schema_migration (
+  id text primary key,
+  at text not null default (datetime('now'))
+)`);
 
-const DEFAULTS = [
+function addColumns(table, cols) {
+  const have = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  for (const [name, ddl] of cols) {
+    if (!have.includes(name)) db.exec(`alter table ${table} add column ${name} ${ddl}`);
+  }
+}
+
+addColumns('content', [
+  ['content_version', 'integer not null default 1'],
+  ['approved_version', 'integer not null default 0'],
+]);
+addColumns('review', [
+  ['content_version', 'integer not null default 0'],
+]);
+addColumns('account', [
+  ['integration_id', "text not null default ''"],
+  ['integration_identifier', "text not null default ''"],
+]);
+addColumns('schedule', [
+  ['content_version', 'integer not null default 1'],
+  ['delivery_state', "text not null default 'pending'"],
+  ['attempt', 'integer not null default 0'],
+  ['next_attempt_at', 'text'],
+  ['postiz_post_id', "text not null default ''"],
+  ['platform_post_id', "text not null default ''"],
+  ['public_url', "text not null default ''"],
+  ['remote_state', "text not null default ''"],
+  ['intent_id', "text not null default ''"],
+  ['claimed_at', 'text'],
+  ['sending_at', 'text'],
+  ['publish_mode', "text not null default 'now'"],
+]);
+addColumns('job', [
+  ['intent_id', "text not null default ''"],
+  ['lease_until', 'text'],
+]);
+addColumns('publish_result', [
+  ['postiz_post_id', "text not null default ''"],
+  ['platform_post_id', "text not null default ''"],
+  ['delivery_state', "text not null default ''"],
+]);
+
+const migratedOnce = (id) => !!db.prepare('select 1 from schema_migration where id = ?').get(id);
+const markMigrated = (id) => db.prepare('insert or ignore into schema_migration(id) values (?)').run(id);
+
+export const BATCH1_MIGRATION = '2026-11-batch1';
+
+/* 回填只做一次：
+   - 老内容默认 approved_version=0 → 一律需要重新审核（fail-closed）。要保留历史批准，
+     显式设置 setting.batch1_legacy_approval='grandfather' 后再启动服务，或用 ops/migrate-batch1.mjs --grandfather-legacy。
+   - 老排期把 content_version 对齐到当前内容版本，避免历史排期被版本门禁整体误杀
+     （历史排期仍要过「是否已批准」这一关，不因对齐而自动放行）。
+   - state='published' 的历史行补 delivery_state='published'，并把 platform_post_id 从 publish_result 回填。 */
+if (!migratedOnce(BATCH1_MIGRATION)) {
+  const policy = db.prepare("select v from setting where k = 'batch1_legacy_approval'").get();
+  if (policy && policy.v === 'grandfather') {
+    const r = db.prepare("update content set approved_version = content_version where status in ('approved','scheduled','published')").run();
+    console.log(`[db] 批次一迁移：按 grandfather 保留历史批准 ${r.changes} 条`);
+  }
+  db.exec(`update schedule set content_version = coalesce((select c.content_version from content c where c.id = schedule.content_id), 1)
+           where content_version is null or content_version = 1`);
+  db.exec(`update schedule set delivery_state = case
+             when state = 'published' then 'published'
+             when state = 'failed' then 'failed'
+             when state = 'queued' then 'submitted'
+             else 'pending' end
+           where state <> 'pending' and delivery_state = 'pending'`);
+  db.exec(`update schedule set platform_post_id = coalesce((
+             select pr.platform_post_id from publish_result pr
+             where pr.schedule_id = schedule.id and pr.ok = 1 and pr.platform_post_id <> ''
+             order by pr.id desc limit 1), '')
+           where platform_post_id = '' and state = 'published'`);
+  db.exec(`update schedule set public_url = coalesce((
+             select pr.url from publish_result pr
+             where pr.schedule_id = schedule.id and pr.ok = 1 and pr.url <> ''
+             order by pr.id desc limit 1), '')
+           where public_url = '' and state = 'published'`);
+  markMigrated(BATCH1_MIGRATION);
+}
+
+/* 事务封装：node:sqlite 的 DatabaseSync 是同步的，用 BEGIN IMMEDIATE 抢写锁，
+   让「认领排期 + 建 job」这种两步写不会在崩溃点留下半截状态。 */
+export function tx(fn) {
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const out = fn();
+    db.exec('COMMIT');
+    return out;
+  } catch (e) {
+    try { db.exec('ROLLBACK'); } catch { /* 回滚失败时保留原始异常 */ }
+    throw e;
+  }
+}
+
+export const DEFAULTS = [
   ['site_name', 'Packrivo 外贸社媒工作台'],
   ['brand_tone', '专业'],
   ['primary_lang', 'en'],
@@ -351,6 +457,20 @@ const DEFAULTS = [
   ['publish_mode', 'semi'],           // auto | semi | manual
   ['publish_channel_default', 'mock'],// mock | postiz | webhook
   ['postiz_base', ''],
+  // 设置页会整体 PUT 这一批键；缺任一行就会被 /api/settings 判成未知项整单拒写，所以默认值必须落库
+  ['postiz_type', 'now'],             // 提交方式默认值 now|schedule|draft；单次发布会显式覆盖，不靠改这里
+  ['postiz_shortlink', '0'],
+  ['postiz_settings', '{}'],          // 平台专属必填项（pinterest board / reddit subreddit 等）
+  ['postiz_integration_map', '{}'],   // 账号没绑定 integration 时的兜底映射
+  ['webhook_url', ''],                // webhook 通道地址，空 = 未配置
+  ['telegram_chat_id', ''],
+  ['image_api_base', ''],
+  ['image_api_model', ''],
+  ['image_api_backup_base', ''],
+  ['image_api_backup_model', ''],
+  ['image_api_fallback_base', ''],
+  ['image_api_fallback_model', ''],
+  ['security_require_token', '1'],    // 0 = 本机免令牌（仅在完全隔离的环境里用）
   ['utm_source_map', '{"facebook_page":"facebook","instagram":"instagram","tiktok":"tiktok","pinterest":"pinterest"}'],
   ['weekly_quota', '5'],
   ['llm_task_models', '{"deconstruct":"deepseek-v4.1-flash","rewrite":"deepseek-v4.1-flash","review":"step-5-preview","report":"space-bunny"}'],

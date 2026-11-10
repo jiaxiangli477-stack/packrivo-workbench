@@ -12,12 +12,35 @@ const fmt = (n) => {
 const pct = (n) => (Number(n) || 0).toFixed(1) + '%';
 const pname = (code) => { const p = (ST.platforms || []).find((x) => x.code === code); return p ? p.label : String(code || ''); };
 
+/* SEC-02：本机服务开了令牌校验后，页面必须带 x-swb-token。
+   令牌由同源的 /swb-env.js 下发（无 CORS 头，别的站点读不到内容）。 */
+let SWB_TOKEN = '';
+async function tokenOnce() {
+  if (SWB_TOKEN) return SWB_TOKEN;
+  try {
+    const r = await fetch('/swb-env.js', { cache: 'no-store' });
+    const t = await r.text();
+    const m = t.match(/"token"\s*:\s*"([0-9a-f]+)"/i);
+    SWB_TOKEN = m ? m[1] : '';
+  } catch { SWB_TOKEN = ''; }
+  return SWB_TOKEN;
+}
+
 async function api(path, method = 'GET', body) {
-  const res = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined });
+  const headers = {};
+  if (body) headers['content-type'] = 'application/json';
+  const tk = await tokenOnce();
+  if (tk) headers['x-swb-token'] = tk;
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const text = await res.text();
   let data = {};
   try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-  if (!res.ok) throw new Error(data.error || 'HTTP ' + res.status);
+  if (!res.ok) {
+    const err = new Error(data.error || 'HTTP ' + res.status);
+    err.code = data.code || '';
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -741,7 +764,14 @@ async function viewGenerate() {
 
 /* ================= 审核 ================= */
 async function viewReview() {
-  const [{ contents }, { accounts }] = await Promise.all([api('/api/contents?status=pending_review'), api('/api/accounts')]);
+  const [{ contents }, { accounts }, approvedRes] = await Promise.all([
+    api('/api/contents?status=pending_review'),
+    api('/api/accounts'),
+    api('/api/contents?status=approved').catch(() => ({ contents: [] })),
+  ]);
+  // UI-02：通过之后这条内容就从待审列表里消失了，原来没有任何入口能替它排期。
+  // 已通过 = 批准版本与当前版本一致，这里只列这类，改过图的会在服务端被 bump 掉、自然掉出列表。
+  const approved = (approvedRes.contents || []).filter((c) => Number(c.approved_version || 0) > 0 && Number(c.approved_version) === Number(c.content_version || 0));
   $('#view').innerHTML = `
     <div class="panel">
       <div class="panel-head"><h2>待审 · ${contents.length}</h2><div class="row tight"><span class="hint">含价格/承诺/认证/案例/联系方式的稿子必须人工点通过</span><button class="btn ghost tiny" data-batch-img>批量配图</button></div></div>
@@ -777,6 +807,20 @@ async function viewReview() {
             <div class="pre mono" data-aio="${c.id}" style="display:none;margin-top:10px"></div>
           </div>
         </details>`).join('') : '<div class="empty">队列是空的，去「AI 二创」生成一批</div>'}
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>已通过 · 待排期 · ${approved.length}</h2><span class="hint">通过后不会自己发；在这里选账号和时间才会进排期队列</span></div>
+      ${approved.length ? `<table><thead><tr><th>#</th><th>平台</th><th>标题</th><th>版本</th><th style="width:220px">发到账号</th><th style="width:200px">时间</th><th></th></tr></thead><tbody>
+        ${approved.map((c) => `<tr>
+          <td class="mono">${c.id}</td>
+          <td><span class="tag info">${esc(pname(c.platform))}</span></td>
+          <td>${esc((c.title || (c.body || '').slice(0, 48) || '(无标题)'))}</td>
+          <td class="mono">v${esc(String(c.content_version || 1))}</td>
+          <td><select data-acc2="${c.id}">${accounts.some((a) => a.platform === c.platform) ? '' : `<option value="" selected disabled>⚠ 没有 ${esc(c.platform)} 账号</option>`}${accounts.filter((a) => a.platform === c.platform).map((a) => `<option value="${a.id}">${esc(pname(a.platform))} / ${esc(a.handle)}${a.integration_id ? '' : '（未绑 integration）'}</option>`).join('')}</select></td>
+          <td><input type="datetime-local" data-when2="${c.id}" /></td>
+          <td><button class="btn tiny" data-sch2="${c.id}">排期</button></td>
+        </tr>`).join('')}
+      </tbody></table>` : '<div class="empty">没有已通过待排期的内容</div>'}
     </div>`;
 
   $$('[data-imgprompt]').forEach((b) => (b.onclick = async (ev) => {
@@ -860,6 +904,18 @@ async function viewReview() {
       await api('/api/schedules', 'POST', { content_id: Number(id), account_id: Number(sel.value), run_at: $(`[data-when="${id}"]`).value || null });
       toast('已排期'); viewReview();
     } catch (e) { toast(e.message, true); }
+  }));
+  $$('[data-sch2]').forEach((b) => (b.onclick = async (ev) => {
+    ev.preventDefault(); ev.stopPropagation();
+    const id = b.dataset.sch2;
+    const sel = $(`[data-acc2="${id}"]`);
+    if (!sel || !sel.value) return toast('这条没有可用的账号，先去「账号」页添加并绑定 integration', true);
+    b.disabled = true;
+    try {
+      const r = await api('/api/schedules', 'POST', { content_id: Number(id), account_id: Number(sel.value), run_at: $(`[data-when2="${id}"]`).value || null });
+      toast('已排期 #' + r.id); viewReview();
+    } catch (e) { toast(e.message, true); }
+    b.disabled = false;
   }));
 }
 
@@ -1212,16 +1268,18 @@ async function viewAccounts() {
         <div class="field"><label>handle</label><input id="a-handle" placeholder="@packrivo" /></div>
         <div class="field" style="flex:1"><label>主页链接</label><input id="a-url" placeholder="https://..." /></div>
         <div class="field" style="flex:1"><label>出口代理（可空）</label><input id="a-proxy" placeholder="http://user:pass@ip:port" /></div>
+        <div class="field"><label>integration id（Postiz 必填）</label><input id="a-int" placeholder="Postiz 集成 id" /></div>
+        <div class="field"><label>integration 标识（可空）</label><input id="a-intname" placeholder="如 mypage" /></div>
         <button class="btn primary" id="a-add">添加</button>
       </div>
     </div>
     <div class="panel" style="margin-top:14px">
       <div class="panel-head"><h2>账号 · ${accounts.length}</h2></div>
-      ${accounts.length ? `<table><thead><tr><th>#</th><th>平台</th><th>handle</th><th>状态</th><th>会话</th><th>代理</th><th>凭据</th><th></th></tr></thead><tbody>
+      ${accounts.length ? `<table><thead><tr><th>#</th><th>平台</th><th>handle</th><th>状态</th><th>会话</th><th>代理</th><th>integration</th><th>凭据</th><th></th></tr></thead><tbody>
         ${accounts.map((a) => `<tr><td class="mono">${a.id}</td><td>${esc(pname(a.platform))}</td><td>${esc(a.handle)}</td>
-          <td>${a.status_view === '已授权' ? '<span class="tag ok">已授权</span>' : '<span class="tag warn">未授权</span>'}</td><td>${esc(a.session_state)}</td><td class="mono">${esc(a.proxy || '—')}</td><td>${a.cred_count}</td>
+          <td>${a.status_view === '已授权' ? '<span class="tag ok">已授权</span>' : '<span class="tag warn">未授权</span>'}</td><td>${esc(a.session_state)}</td><td class="mono">${esc(a.proxy || '—')}</td><td class="mono">${a.integration_id ? `<span class="tag ok">已绑定</span> <span class="mono">${esc(a.integration_id)}</span>` : '<span class="tag bad">未绑定</span>'} <button class="btn ghost tiny" data-bind="${a.id}">${a.integration_id ? '改' : '绑定'}</button></td><td>${a.cred_count}</td>
           <td><a class="btn ghost tiny" href="${esc(accountUrl(a))}" target="_blank" rel="noreferrer">打开主页</a>${PLATFORM_AUTH[a.platform] ? `<a class="btn ghost tiny" href="${PLATFORM_AUTH[a.platform].url}" target="_blank" rel="noreferrer">去绑定</a>` : ""}<button class="btn ghost tiny" data-cred="${a.id}" data-plat="${a.platform}">填凭据</button><button class="btn ghost tiny" data-probe="${a.id}">探测</button><button class="btn danger tiny" data-dela="${a.id}">删</button></td></tr>
-        <tr class="cred-form" id="cred-${a.id}" style="display:none"><td colspan="8" style="background:var(--surface-2)">
+        <tr class="cred-form" id="cred-${a.id}" style="display:none"><td colspan="9" style="background:var(--surface-2)">
           <div class="row" style="align-items:flex-end;gap:10px;padding:6px 0">
             ${(a.platform === 'bluesky'
               ? [["handle","handle（如 packrivo.bsky.social）","packrivo.bsky.social"],["app_password","App Password（xxxx-xxxx-xxxx-xxxx）","xxxx-xxxx-xxxx-xxxx"]]
@@ -1232,15 +1290,62 @@ async function viewAccounts() {
             <button class="btn primary tiny" data-cred-save="${a.id}" data-plat="${a.platform}">保存并验证</button>
           </div>
           <div class="muted" id="cred-msg-${a.id}" style="font-size:12px">${a.platform === 'bluesky' ? 'App Password 在 Bluesky 设置里生成，不是你的登录密码' : a.platform === 'mastodon' ? 'token 在实例的 Preferences → Development 里生成，勾 write 权限' : ''}</div>
+        </td></tr>
+        <tr class="bind-form" id="bind-${a.id}" style="display:none"><td colspan="9" style="background:var(--surface-2)">
+          <div class="row" style="align-items:flex-end;gap:10px;padding:6px 0">
+            <div class="field" style="flex:1"><label>Postiz 集成 id（integration_id，Postiz 必填）</label><input id="bf-${a.id}-iid" placeholder="如 int-abc123" value="${esc(a.integration_id || '')}" /></div>
+            <div class="field" style="flex:1"><label>集成标识（identifier，可空）</label><input id="bf-${a.id}-ident" placeholder="如 mypage" value="${esc(a.integration_identifier || '')}" /></div>
+            <button class="btn primary tiny" data-bind-save="${a.id}">保存绑定</button>
+            <button class="btn ghost tiny" data-bind-cancel="${a.id}">取消</button>
+          </div>
+          <div class="muted" id="bind-msg-${a.id}" style="font-size:12px">留空 integration_id 并保存 = 解绑（显式清空，不再自动兜底）</div>
         </td></tr>`).join('')}
       </tbody></table>` : '<div class="empty">还没有账号，发布必须挂账号</div>'}
     </div>`;
   $('#a-add').onclick = async () => {
     try {
-      await api('/api/accounts', 'POST', { platform: $('#a-plat').value, handle: $('#a-handle').value, profile_url: $('#a-url').value, proxy: $('#a-proxy').value });
+      await api('/api/accounts', 'POST', {
+        platform: $('#a-plat').value,
+        handle: $('#a-handle').value,
+        profile_url: $('#a-url').value,
+        proxy: $('#a-proxy').value,
+        integration_id: $('#a-int').value,
+        integration_identifier: $('#a-intname').value,
+      });
       toast('已添加'); viewAccounts();
     } catch (e) { toast(e.message, true); }
   };
+  // PUB-04：绑定关系必须是显式填的，不再靠「取第一个账号」兜底；内联表单 + 状态处理
+  const bindRow = (id) => $('#bind-' + id);
+  const toggleRow = (row, on) => { if (row) row.style.display = on ? 'table-row' : 'none'; };
+  $$('[data-bind]').forEach((b) => (b.onclick = () => {
+    const row = bindRow(b.dataset.bind);
+    if (!row) return;
+    // 打开绑定时先收起该行的凭据表单，避免两个内联表单同屏混淆
+    const cred = $('#cred-' + b.dataset.bind);
+    if (cred) cred.style.display = 'none';
+    toggleRow(row, row.style.display === 'none' || !row.style.display);
+  }));
+  $$('[data-bind-cancel]').forEach((b) => (b.onclick = () => toggleRow(bindRow(b.dataset.bindCancel), false)));
+  $$('[data-bind-save]').forEach((b) => (b.onclick = async () => {
+    const id = b.dataset.bindSave;
+    const msg = $('#bind-msg-' + id);
+    const iidEl = $('#bf-' + id + '-iid');
+    const identEl = $('#bf-' + id + '-ident');
+    const iid = iidEl ? iidEl.value : '';
+    const ident = identEl ? identEl.value : '';
+    b.disabled = true; b.textContent = '保存中…';
+    if (msg) msg.innerHTML = '<span class="tag info">绑定中…</span>';
+    try {
+      await api('/api/accounts/' + id, 'PATCH', { integration_id: iid.trim(), integration_identifier: ident.trim() });
+      toast(iid.trim() ? '已绑定' : '已解绑');
+      viewAccounts();
+    } catch (e) {
+      if (msg) msg.innerHTML = '<span class="tag bad">' + esc(e.message) + '</span>';
+      toast(e.message, true);
+      b.disabled = false; b.textContent = '保存绑定';
+    }
+  }));
   $$('[data-cred]').forEach((b) => (b.onclick = () => {
     const row = $('#cred-' + b.dataset.cred);
     if (row) row.style.display = row.style.display === 'none' || !row.style.display ? 'table-row' : 'none';
@@ -1437,7 +1542,7 @@ async function viewSettings() {
         : '当前未配置 Postiz'}</div>
       <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:12px">高级：通道映射与平台 settings（JSON）</summary>
         <div class="grid g3" style="margin-top:8px">
-          ${f('postiz_integration_map', 'postiz_integration_map（平台→integration id，留空按 identifier 自动匹配）')}
+          ${f('postiz_integration_map', 'postiz_integration_map（平台→integration id，仅作展示提示；真正生效的是账号页里绑的 integration_id）')}
           ${f('postiz_settings', 'postiz_settings（按 __type 覆盖，如 {"pinterest":{"board":"xxx"}}）')}
         </div></details>
     </div>

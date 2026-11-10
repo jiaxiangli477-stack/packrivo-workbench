@@ -2,18 +2,23 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { all, get, run, setting, setSetting, audit, nowIso, ROOT, DATA_DIR } from './db.mjs';
+import { all, get, run, setting, setSetting, audit, nowIso, tx, ROOT, DATA_DIR } from './db.mjs';
 import { encrypt, decrypt, keyHint } from './crypto.mjs';
 import { SECRET_KEYS } from './secrets.mjs';
+// 这些键是别的键的存储位，只能经专用写入函数（带加密/校验）落库，设置页直接 PUT 一律拒掉
+const RESERVED_SETTING_KEYS = new Set(['postiz_key']);
 import { chat, testEndpoint, pingBuiltin } from './llm.mjs';
-import { channelCatalog } from './channels.mjs';
-import { status as postizStatus, saveKey as postizSaveKey, verify as postizVerify, publish as postizPublish, listIntegrations as postizIntegrations, integrationFor as postizIntegrationFor, TYPE_CANDIDATES, NO_POSTIZ_CHANNEL } from './postiz.mjs';
+import { channelCatalog, channelFor } from './channels.mjs';
+import { status as postizStatus, saveKey as postizSaveKey, verify as postizVerify, publish as postizPublish, listIntegrations as postizIntegrations, integrationFor as postizIntegrationFor, TYPE_CANDIDATES, NO_POSTIZ_CHANNEL, normalizePublishMode } from './postiz.mjs';
 import { discover, SOURCES } from './sources.mjs';
 import { buildRadar, buildItems, probeCompetitor, suggest } from './radar.mjs';
 import { warmupAlibaba } from './browser.mjs';
 import { comfyStatus, listCheckpoints, generateImage, sdServiceStatus, sdServiceGenerate } from './comfy.mjs';
 import { auditContent } from './quality.mjs';
 import { tick } from './queue.mjs';
+import { checkPublishable } from './gate.mjs';
+import { safeFetchText, safeProbe, safeFetchBinary } from './safefetch.mjs';
+import * as auth from './auth.mjs';
 
 const PORT = Number(process.env.SWB_PORT || 8795);
 /* 素材目录跟着数据目录走：隔离实例（SWB_DATA 指别处）也要能读到自己的 media，
@@ -57,22 +62,58 @@ async function body(req) {
 const routes = [];
 const on = (method, pattern, fn) => routes.push({ method, pattern, fn });
 
-/* 落地页可达性检查：保存产品前先探一次，打不开就不让保存 */
+/* 门禁判定转成 HTTP 错误：前端拿 code 就能分支提示，不用去猜中文文案 */
+function gateError(g) {
+  const e = new Error(g.reason || '发布门禁未通过');
+  e.code = g.code || 'gate_blocked';
+  return e;
+}
+
+/* ---------- 审核版本绑定（PUB-01） ----------
+   审核只对「审核那一刻的那一版」有效。正文/标题/标签/配图一改，content_version 就 +1，
+   approved_version 落后于它 → gate 判 content_not_approved，不需要额外维护「失效」标记。
+   改内容同时把还没发出去的排期挡住，避免「改了内容却按旧排期照发」。 */
+function bumpContentVersion(contentId, why = 'edit') {
+  const c = get('select * from content where id = ?', contentId);
+  if (!c) return null;
+  const next = Number(c.content_version || 1) + 1;
+  run('update content set content_version = ? where id = ?', next, contentId);
+  cancelUnsentForContent(contentId, `内容已修改（${why}），旧排期作废，需重新排期`);
+  audit('content.version', `content:${contentId}`, { from: c.content_version || 1, to: next, why });
+  return next;
+}
+
+/* 驳回 / 内容变更 → 取消这条内容所有还没真正发出去的排期与作业 */
+function cancelUnsentForContent(contentId, reason) {
+  const rows = all("select id from schedule where content_id = ? and state in ('pending','queued','retrying','blocked')", contentId);
+  for (const r of rows) {
+    run("update schedule set state = 'cancelled', delivery_state = 'failed', last_error = ? where id = ?", reason.slice(0, 500), r.id);
+    run("update job set state = 'cancelled', last_error = ? where payload like ? and state in ('queued','running','retry','blocked')",
+      reason.slice(0, 500), `%"schedule_id":${r.id}%`);
+  }
+  return rows.length;
+}
+
+/* 是否这次审核动作真的授予了发布许可 */
+function grantApproval(contentId) {
+  const c = get('select * from content where id = ?', contentId);
+  if (!c) return null;
+  run("update content set status = 'approved', approved_at = ?, approved_version = content_version where id = ?", nowIso(), contentId);
+  audit('review.approve', `content:${contentId}`, { approved_version: c.content_version || 1 });
+  return c.content_version || 1;
+}
+
+/* 落地页可达性检查：保存产品前先探一次，打不开就不让保存。
+   SEC-03：走 safeProbe（连接前判 IP 分类），填内网地址不能变成内网探针。 */
 async function assertReachable(url) {
   if (!url) return;
-  const tryFetch = async (method) => {
-    const ac = new AbortController();
-    const t = setTimeout(() => ac.abort(), 8000);
-    try {
-      return await fetch(url, { method, redirect: 'follow', signal: ac.signal, headers: { 'user-agent': 'Mozilla/5.0' } });
-    } finally { clearTimeout(t); }
-  };
   let r;
-  try { r = await tryFetch('HEAD'); } catch {}
-  if (!r || !r.ok) {
-    try { r = await tryFetch('GET'); } catch {}
+  try {
+    r = await safeProbe(url, { timeoutMs: 8000 });
+  } catch (e) {
+    throw new Error('落地页打不开：' + url + '（' + e.message + '）');
   }
-  if (!r || !r.ok) throw new Error('落地页打不开' + (r ? '（HTTP ' + r.status + '）' : '') + '：' + url);
+  if (Number(r.status) >= 400) throw new Error('落地页打不开（HTTP ' + r.status + '）：' + url);
 }
 
 /* 模型思考过程泄漏识别：这类文本绝不能进内容库 */
@@ -158,11 +199,16 @@ on('GET', /^\/api\/settings$/, async () => {
 on('PUT', /^\/api\/settings$/, async (m, b) => {
   const known = new Set(all('select k from setting').map((r) => r.k));
   for (const k of SECRET_KEYS) known.add(k);
+  const entries = Object.entries(b || {});
+  // 先整单校验再落盘：原来边写边收集未知键，抛错时前面的键已经落库，前端看到 400 但配置被改了一半
+  const rejected = entries.filter(([k]) => !known.has(k) || RESERVED_SETTING_KEYS.has(k)).map(([k]) => k);
+  if (rejected.length) {
+    audit('settings.reject', '', { rejected });
+    throw new Error('未知设置项（拒绝写入）：' + rejected.join(', '));
+  }
   const applied = [];
   const skipped = [];
-  const rejected = [];
-  for (const [k, v] of Object.entries(b || {})) {
-    if (!known.has(k)) { rejected.push(k); continue; }
+  for (const [k, v] of entries) {
     if (SECRET_KEYS.has(k)) {
       // 留空 = 不改动（设置页的密码框故意不回显，空串不能当成"清空密钥"）；JSON null = 明确清空
       if (v === null) {
@@ -199,21 +245,24 @@ on('GET', /^\/api\/accounts$/, async () => ({
 on('POST', /^\/api\/accounts$/, async (m, b) => {
   if (!b.platform || !b.handle) throw new Error('platform 与 handle 必填');
   const r = run(
-    'insert into account(platform, handle, display_name, profile_url, kind, status, proxy, fingerprint_dir, note) values (?,?,?,?,?,?,?,?,?)',
-    b.platform, b.handle, b.display_name || '', b.profile_url || '', b.kind || 'business', b.status || 'active', b.proxy || '', b.fingerprint_dir || '', b.note || ''
+    'insert into account(platform, handle, display_name, profile_url, kind, status, proxy, fingerprint_dir, note, integration_id, integration_identifier) values (?,?,?,?,?,?,?,?,?,?,?)',
+    b.platform, b.handle, b.display_name || '', b.profile_url || '', b.kind || 'business', b.status || 'active', b.proxy || '', b.fingerprint_dir || '', b.note || '',
+    String(b.integration_id || '').trim(), String(b.integration_identifier || '').trim()
   );
-  audit('account.create', `id:${r.lastInsertRowid}`, { platform: b.platform, handle: b.handle });
+  audit('account.create', `id:${r.lastInsertRowid}`, { platform: b.platform, handle: b.handle, integration_id: b.integration_id || '' });
   return { id: Number(r.lastInsertRowid) };
 });
 
 on('PATCH', /^\/api\/accounts\/(\d+)$/, async (m, b) => {
   const id = Number(m[1]);
-  const fields = ['display_name', 'profile_url', 'kind', 'status', 'proxy', 'fingerprint_dir', 'note', 'session_state'];
+  // PUB-04：integration 绑定必须能改，否则界面换不了通道
+  const fields = ['display_name', 'profile_url', 'kind', 'status', 'proxy', 'fingerprint_dir', 'note', 'session_state', 'integration_id', 'integration_identifier'];
   const sets = [];
   const vals = [];
-  for (const f of fields) if (f in b) { sets.push(`${f} = ?`); vals.push(b[f]); }
+  for (const f of fields) if (f in b) { sets.push(`${f} = ?`); vals.push(typeof b[f] === 'string' ? b[f].trim() : b[f]); }
   if (!sets.length) return { ok: true, changed: 0 };
   run(`update account set ${sets.join(', ')} where id = ?`, ...vals, id);
+  if ('integration_id' in b) audit('account.bind', `id:${id}`, { integration_id: b.integration_id || '' });
   return { ok: true, changed: sets.length };
 });
 
@@ -638,12 +687,19 @@ on('POST', /^\/api\/contents\/(\d+)\/review$/, async (m, b) => {
   const id = Number(m[1]);
   const c = get('select * from content where id = ?', id);
   if (!c) throw new Error('内容不存在');
+  // 请求体里塞 status=approved 没用：许可只由这里显式写 approved_version 产生
   const decision = b.decision === 'approve' ? 'approve' : 'reject';
   const kind = b.reviewer_kind || 'human';
   run('insert into review(content_id, reviewer_kind, decision, score, notes) values (?,?,?,?,?)', id, kind, decision, Number(b.score || 0), b.notes || '');
-  if (decision === 'approve') run("update content set status = 'approved', approved_at = ? where id = ?", nowIso(), id);
-  else run("update content set status = 'rejected' where id = ?", id);
-  return { ok: true, status: decision === 'approve' ? 'approved' : 'rejected' };
+  if (decision === 'approve') {
+    const v = grantApproval(id);
+    return { ok: true, status: 'approved', content_version: c.content_version || 1, approved_version: v };
+  }
+  run("update content set status = 'rejected', approved_version = 0 where id = ?", id);
+  // 驳回即撤：已经排上队但还没发出去的，全部取消
+  const cancelled = cancelUnsentForContent(id, '内容被驳回，排期已取消');
+  audit('review.reject', `content:${id}`, { cancelled });
+  return { ok: true, status: 'rejected', cancelled };
 });
 
 on('POST', /^\/api\/contents\/(\d+)\/ai-review$/, async (m) => {
@@ -677,7 +733,8 @@ ${kbContext(2000)}
   if (looksLikeReasoning(c.body)) {
     const objLeak = { score: 0, decision: 'reject', issues: ['正文是模型思考过程，不是可发布的帖子'], reason: '自动拦截：检测到 reasoning 泄漏' };
     run('insert into review(content_id, reviewer_kind, decision, score, notes) values (?,?,?,?,?)', id, 'ai', 'reject', 0, JSON.stringify(objLeak));
-    run("update content set status = 'rejected' where id = ?", id);
+    run("update content set status = 'rejected', approved_version = 0 where id = ?", id);
+    cancelUnsentForContent(id, 'AI 判定正文异常，排期已取消');
     return { ok: true, ai: objLeak, via: 'leak-guard', applied: false, forced_manual: false, sensitive_hits: [] };
   }
   const hits = sensitiveHits(`${c.title || ''}\n${c.body}\n${c.hashtags || ''}`);
@@ -686,11 +743,13 @@ ${kbContext(2000)}
     id, 'ai', obj.decision === 'approve' ? 'approve' : 'reject', Number(obj.score || 0),
     JSON.stringify({ ...obj, sensitive_hits: hits }));
   if (obj.decision === 'approve' && !forcedManual && setting('publish_mode') === 'auto') {
-    run("update content set status = 'approved', approved_at = ? where id = ?", nowIso(), id);
+    grantApproval(id);
     applied = true;
   }
   if (forcedManual) {
-    run("update content set status = 'pending_review' where id = ?", id);
+    // 命中敏感词：AI 说通过也不算数，退回人工，旧批准作废
+    run("update content set status = 'pending_review', approved_version = 0 where id = ?", id);
+    cancelUnsentForContent(id, '敏感词命中转人工复核，排期已取消');
     audit('review.forced_manual', `content:${id}`, { hits: hits.map((h) => h.label) });
   }
   return { ok: true, ai: obj, via, applied, sensitive_hits: hits, forced_manual: forcedManual };
@@ -725,18 +784,50 @@ on('POST', /^\/api\/schedules$/, async (m, b) => {
   if (!content) throw new Error('内容不存在');
   const account = get('select * from account where id = ?', Number(b.account_id));
   if (!account) throw new Error('账号不存在');
-  if (content.status === 'rejected') throw new Error('内容已被驳回，不能排期');
+
+  // 发布模式按请求走，不再改全局 postiz_type（PUB-02：两个人同时排期会互相覆盖）
+  const mode = normalizePublishMode(b.publish_mode || b.mode, 'now');
+  const channelName = b.channel || 'auto';
+  const ch = channelFor(channelName === 'auto' ? setting('publish_channel_default') : channelName, account.platform);
+
+  // 建排期这一刻就先门禁一次，问题早暴露，不要等到 worker 3 秒后才发现发不出去
+  const gate = checkPublishable({ content, account, schedule: null, requireIntegration: ch.key === 'postiz' });
+  if (!gate.ok) throw gateError(gate);
+
   const runAt = b.run_at ? String(b.run_at).replace('T', ' ').slice(0, 19) : nowIso();
-  const r = run('insert into schedule(content_id, account_id, channel, run_at, state) values (?,?,?,?,?)',
-    content.id, account.id, b.channel || 'auto', runAt, 'pending');
-  audit('schedule.create', `content:${content.id}`, { run_at: runAt, channel: b.channel || 'auto' });
-  return { id: Number(r.lastInsertRowid), run_at: runAt, content_status: content.status };
+  const r = run(
+    'insert into schedule(content_id, account_id, channel, run_at, state, content_version, publish_mode, delivery_state, intent_id, claimed_at) values (?,?,?,?,?,?,?,?,?,?)',
+    content.id, account.id, channelName, runAt, 'pending', Number(content.content_version || 1), mode, 'pending', '', ''
+  );
+  audit('schedule.create', `content:${content.id}`, { run_at: runAt, channel: channelName, mode, content_version: content.content_version || 1 });
+  return { id: Number(r.lastInsertRowid), run_at: runAt, publish_mode: mode, content_version: content.content_version || 1, content_status: content.status };
 });
 
-on('POST', /^\/api\/schedules\/(\d+)\/run-now$/, async (m) => {
+on('POST', /^\/api\/schedules\/(\d+)\/run-now$/, async (m, b) => {
   const id = Number(m[1]);
-  run("update schedule set run_at = ?, state = 'pending' where id = ?", nowIso(), id);
-  return { ok: true };
+  const s = get('select * from schedule where id = ?', id);
+  if (!s) throw new Error('排期不存在');
+  if (!['pending', 'blocked', 'retrying', 'failed'].includes(String(s.state))) {
+    throw new Error(`排期当前状态是 ${s.state}，不能立即执行`);
+  }
+  const content = get('select * from content where id = ?', s.content_id);
+  const account = get('select * from account where id = ?', s.account_id);
+  if (!content || !account) throw new Error('内容或账号已删除');
+  const ch = channelFor(s.channel === 'auto' ? setting('publish_channel_default') : s.channel, account.platform);
+  const gate = checkPublishable({ content, account, schedule: s, requireIntegration: ch.key === 'postiz' });
+  if (!gate.ok) {
+    // 被拦的排期不要停在 pending 让 ticker 之后再捡起来送旧稿：落到终态等人重新排期
+    const state = (gate.code === 'content_rejected' || gate.code === 'content_missing') ? 'failed' : 'blocked';
+    run("update schedule set state = ?, delivery_state = ?, last_error = ? where id = ?",
+      state, state === 'failed' ? 'failed' : 'awaiting-user', gate.reason.slice(0, 500), id);
+    audit('publish.gate', `schedule:${id}`, { code: gate.code, stage: 'run-now' });
+    throw gateError(gate);
+  }
+  const mode = normalizePublishMode(b?.publish_mode || b?.mode, s.publish_mode || 'now');
+  run("update schedule set run_at = ?, state = 'pending', publish_mode = ?, delivery_state = 'pending', claimed_at = '', intent_id = '', last_error = '' where id = ?",
+    nowIso(), mode, id);
+  audit('schedule.run_now', `schedule:${id}`, { mode, content_version: content.content_version });
+  return { ok: true, publish_mode: mode };
 });
 
 on('GET', /^\/api\/results$/, async () => ({
@@ -770,22 +861,19 @@ on('POST', /^\/api\/channels\/postiz\/verify$/, async () => {
   }
 });
 
-/* 只建草稿（Postiz 里可见、不对外发），用来验证 settings 拼得对不对 */
+/* 只建草稿（Postiz 里可见、不对外发），用来验证 settings 拼得对不对。
+   PUB-02：模式按请求传，不再改全局 postiz_type——改全局会让同时在跑的正式排期也变成草稿 */
 on('POST', /^\/api\/channels\/postiz\/draft$/, async (m, b) => {
   const content = get('select * from content where id = ?', Number(b.content_id));
   if (!content) throw new Error('内容不存在');
   const account = get('select * from account where id = ?', Number(b.account_id));
   if (!account) throw new Error('账号不存在');
-  const prev = setting('postiz_type');
-  setSetting('postiz_type', 'draft');
   try {
-    const r = await postizPublish({ content, account, platform: account.platform, schedule: null });
-    audit('postiz.draft', `content:${content.id}`, { post_id: r.post_id, platform: account.platform });
+    const r = await postizPublish({ content, account, platform: account.platform, schedule: null, mode: 'draft' });
+    audit('postiz.draft', `content:${content.id}`, { postiz_post_id: r.postiz_post_id || r.post_id, platform: account.platform });
     return r;
   } catch (e) {
-    return { ok: false, error_class: e.errorClass || 'exception', error: e.message, detail: e.detail || '' };
-  } finally {
-    setSetting('postiz_type', prev || 'now');
+    return { ok: false, error_class: e.errorClass || 'exception', error: e.message, detail: e.detail || '', dispatched: !!e.dispatched, outcome_known: e.outcomeKnown !== false };
   }
 });
 
@@ -1388,6 +1476,8 @@ Output JSON only: {"prompt":"...","negative":"..."}`;
     out = await generateImage({ prompt, negative, width, height });
   }
   run('update content set image_path = ?, image_alt = ? where id = ?', out.file, prompt.slice(0, 300), id);
+  // 换图改的是待发内容本身：审核人看的是旧图，批准必须作废
+  bumpContentVersion(id, 'generate-image');
   audit('content.generate_image', String(id), { model: out.model, bytes: out.bytes });
   return { ok: true, url: out.url, file: out.file, model: out.model, width: out.width, height: out.height, prompt };
 });
@@ -1449,6 +1539,7 @@ Output JSON only: {"prompt":"...","negative":"..."}`;
 
       run('update content set image_path = ?, image_alt = ?, image_prompt = ? where id = ?',
         out.file, prompt.slice(0, 300), JSON.stringify({ prompt, negative, ratio }), id);
+      bumpContentVersion(id, 'image-batch');
       imageBatch.ok++;
       imageBatch.results.push({ id, url: out.url, model: out.model });
     } catch (e) {
@@ -1501,16 +1592,18 @@ on('POST', /^\/api\/blog\/import$/, async (m, b) => {
   const url = String(b.url || '').trim();
   if (!/^https?:\/\//i.test(url)) throw new Error('请填写完整博客链接（含 https://）');
 
-  const ac = new AbortController();
-  const timer = setTimeout(() => ac.abort(), 20000);
   let html = '';
   try {
-    const r = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0' }, signal: ac.signal, redirect: 'follow' });
-    if (!r.ok) throw new Error('博客打不开：HTTP ' + r.status);
-    html = await r.text();
+    // SEC-03：跟 safeProbe 同一条链路——解析结果逐地址判内网、重定向逐跳复检、正文 2MB 上限
+    const r = await safeFetchText(url, {
+      timeoutMs: 20000,
+      maxBytes: 2 * 1024 * 1024,
+      acceptTypes: ['text/html', 'application/xhtml+xml', 'text/plain'],
+    });
+    html = r.text;
   } catch (e) {
     throw new Error('读取博客失败：' + e.message);
-  } finally { clearTimeout(timer); }
+  }
 
   const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ndash: '-', mdash: '--', rsquo: "'", lsquo: "'", ldquo: '"', rdquo: '"', hellip: '...' };
   const decodeEnt = (t) => String(t || '')
@@ -2024,22 +2117,23 @@ const thumbCache = new Map();
 on('GET', /^\/api\/thumb$/, async (m, b, req, res) => {
   const u = new URL(m.__url, 'http://x').searchParams.get('u');
   if (!u) throw new Error('缺少 u');
-  const target = new URL(u);
+  let target;
+  try { target = new URL(u); } catch { throw new Error('图片地址不合法'); }
   if (target.protocol !== 'https:') throw new Error('只允许 https');
-  const host = target.hostname;
-  if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) throw new Error('禁止内网地址');
   const cached = thumbCache.get(target.href);
   if (cached) { res.writeHead(200, { 'content-type': cached.type, 'cache-control': 'public, max-age=86400' }); res.end(cached.buf); return { __handled: true }; }
-  const r = await fetch(target.href, { headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://' + host + '/' } });
-  if (!r.ok) throw new Error('HTTP ' + r.status);
-  const type = r.headers.get('content-type') || '';
-  if (!/^image\//.test(type)) throw new Error('不是图片');
-  const buf = Buffer.from(await r.arrayBuffer());
-  if (buf.length > 3 * 1024 * 1024) throw new Error('图片过大');
-  thumbCache.set(target.href, { buf, type });
+  // SEC-03：原来只有一串正则黑名单（IPv6、十进制点分、DNS 指向内网都能绕），改成连接前逐地址判定
+  const r = await safeFetchBinary(target.href, {
+    timeoutMs: 15000,
+    maxBytes: 3 * 1024 * 1024,
+    acceptPrefix: 'image/',
+    headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://' + target.hostname + '/' },
+  });
+  const type = r.contentType || 'image/*';
+  thumbCache.set(target.href, { buf: r.buf, type });
   if (thumbCache.size > 500) thumbCache.delete(thumbCache.keys().next().value);
   res.writeHead(200, { 'content-type': type, 'cache-control': 'public, max-age=86400' });
-  res.end(buf);
+  res.end(r.buf);
   return { __handled: true };
 });
 /* ---------- 静态 ---------- */
@@ -2052,16 +2146,54 @@ async function serveStatic(req, res, pathname) {
   }
   try {
     const data = await readFile(file);
-    res.writeHead(200, { 'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' });
+    const ext = path.extname(file).toLowerCase();
+    const headers = { 'content-type': MIME[ext] || 'application/octet-stream' };
+    // 页面脚本改了要立刻生效，否则浏览器还在跑旧 app.js（旧脚本不带令牌/SWB__ 注入就不生效）
+    if (ext === '.js' || ext === '.html' || ext === '.css') headers['cache-control'] = 'no-store';
+    res.writeHead(200, headers);
     res.end(data);
   } catch {
     res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
   }
 }
 
+/* ---------- 本机访问控制（SEC-02） ---------- */
+const AUTH = auth.loadAppToken(DATA_DIR, process.env.SWB_API_TOKEN || '');
+const ALLOW_HOSTS = auth.defaultAllowHosts(process.env.SWB_ALLOW_HOSTS || '');
+const requireToken = () => setting('security_require_token') !== '0';
+
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  // STAB-02：Host 头缺失或畸形时 new URL 会抛，原来这一抛发生在 try 之外，进程直接吃未捕获异常
+  let url;
+  try {
+    url = new URL(req.url, `http://${req.headers.host || '127.0.0.1'}`);
+  } catch {
+    send(res, 400, { error: '请求行不合法', code: 'bad_request' });
+    return;
+  }
   const pathname = url.pathname;
+
+  // 页面用的令牌：与 app.js 同源，没有 CORS 头，别的站点读不到
+  if (pathname === '/swb-env.js') {
+    const chk = auth.checkRequest(req, { token: AUTH.token, allowHosts: ALLOW_HOSTS, port: PORT, requireToken: false });
+    if (!chk.ok) { send(res, chk.status, { error: chk.message, code: chk.code }); return; }
+    res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(`window.__SWB__ = ${JSON.stringify({ token: AUTH.token, port: PORT })};\n`);
+    return;
+  }
+
+  const chk = auth.checkRequest(req, {
+    token: AUTH.token,
+    allowHosts: ALLOW_HOSTS,
+    port: PORT,
+    requireToken: requireToken() && !auth.isExempt(pathname),
+  });
+  if (!chk.ok) {
+    audit('http.deny', pathname, { code: chk.code, method: req.method });
+    send(res, chk.status, { error: chk.message, code: chk.code });
+    return;
+  }
+
   if (!pathname.startsWith('/api/')) return serveStatic(req, res, pathname);
 
   for (const r of routes) {
@@ -2075,11 +2207,12 @@ const server = http.createServer(async (req, res) => {
       if (out && out.__handled) return;
       send(res, 200, out ?? { ok: true });
     } catch (e) {
-      send(res, 400, { error: e.message });
+      // 门禁类错误带 code，前端据此提示；其余按 400
+      send(res, e.status || 400, { error: e.message, code: e.code || 'bad_request' });
     }
     return;
   }
-  send(res, 404, { error: 'no route', path: pathname });
+  send(res, 404, { error: 'no route', code: 'no_route', path: pathname });
 });
 
 setInterval(() => {
@@ -2088,13 +2221,14 @@ setInterval(() => {
 
 /* 每 30 分钟回捞一次 Bluesky 互动数据 */
 setInterval(() => {
-  fetch(`http://127.0.0.1:${PORT}/api/metrics/sync-bsky`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+  fetch(`http://127.0.0.1:${PORT}/api/metrics/sync-bsky`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-swb-token': AUTH.token }, body: '{}' })
     .catch(() => {});
 }, 30 * 60 * 1000);
 
 server.listen(PORT, HOST, () => {
   console.log(`[social-workbench] http://127.0.0.1:${PORT}`);
   console.log(`[social-workbench] data: ${process.env.SWB_DATA || path.join(ROOT, 'data')}`);
+  console.log(`[social-workbench] token: ${AUTH.source === 'env' ? '来自 SWB_API_TOKEN' : AUTH.file}${requireToken() ? '' : '（security_require_token=0，暂未强制）'}`);
   if (process.env.SWB_CRYPTO_WEAK === '1') console.log('[social-workbench] 警告：DPAPI 不可用，主密钥以明文保存');
   tick().catch(() => {});
 });
